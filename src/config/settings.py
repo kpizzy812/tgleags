@@ -4,7 +4,15 @@
 import os
 from typing import Optional
 from pydantic import Field
-from pydantic_settings import BaseSettings
+
+# Пробуем разные варианты импорта BaseSettings
+try:
+    from pydantic_settings import BaseSettings
+except ImportError:
+    try:
+        from pydantic import BaseSettings
+    except ImportError:
+        raise ImportError("Не удалось импортировать BaseSettings. Установите: pip install pydantic-settings")
 
 
 class Settings(BaseSettings):

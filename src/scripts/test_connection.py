@@ -5,14 +5,24 @@
 import asyncio
 import sys
 import os
+from pathlib import Path
 
-# Добавляем путь к проекту
-sys.path.insert(0, os.path.abspath('.'))
+# Добавляем корневую папку проекта в Python path (на 2 уровня выше)
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
 
-from src.core.telegram_client import TelegramAIClient
-from src.config.settings import settings
-from src.utils.helpers import setup_logging
-from loguru import logger
+try:
+    from src.core.telegram_client import TelegramAIClient
+    from src.config.settings import settings
+    from src.utils.helpers import setup_logging
+    from loguru import logger
+except ImportError as e:
+    print(f"❌ Ошибка импорта: {e}")
+    print("Убедитесь, что файл запускается из корня проекта")
+    print(f"Текущая папка: {os.getcwd()}")
+    print(f"Путь к скрипту: {__file__}")
+    print(f"Project root: {project_root}")
+    sys.exit(1)
 
 
 async def test_telegram_connection():
@@ -77,32 +87,39 @@ async def test_telegram_connection():
 
 async def main():
     """Главная функция"""
-    logger.info("🚀 Запуск тестирования Telegram AI Companion...")
+    print("🚀 Запуск тестирования Telegram AI Companion...")
+    print(f"📁 Текущая директория: {os.getcwd()}")
     
     # Проверяем конфигурацию
-    logger.info("📋 Проверка конфигурации...")
-    logger.info(f"   API ID: {settings.telegram_api_id}")
-    logger.info(f"   API Hash: {'*' * len(settings.telegram_api_hash)}")
-    logger.info(f"   Phone: {settings.telegram_phone}")
-    logger.info(f"   OpenAI Model: {settings.openai_model}")
+    print("📋 Проверка конфигурации...")
     
-    if not settings.telegram_api_id or not settings.telegram_api_hash:
-        logger.error("❌ Не настроены Telegram API параметры в .env файле")
-        return
-    
-    if not settings.openai_api_key:
-        logger.error("❌ Не настроен OpenAI API ключ в .env файле")
+    try:
+        print(f"   API ID: {settings.telegram_api_id}")
+        print(f"   API Hash: {'*' * len(str(settings.telegram_api_hash))}")
+        print(f"   Phone: {settings.telegram_phone}")
+        print(f"   OpenAI Model: {settings.openai_model}")
+        
+        if not settings.telegram_api_id or not settings.telegram_api_hash:
+            print("❌ Не настроены Telegram API параметры в .env файле")
+            return
+        
+        if not settings.openai_api_key:
+            print("❌ Не настроен OpenAI API ключ в .env файле")
+            return
+    except Exception as e:
+        print(f"❌ Ошибка чтения конфигурации: {e}")
+        print("Убедитесь, что файл .env настроен правильно")
         return
     
     # Запускаем тест
     success = await test_telegram_connection()
     
     if success:
-        logger.info("✅ Telegram AI Companion готов к работе!")
-        logger.info("💡 Для запуска полного мониторинга используйте:")
-        logger.info("   python -m src.cli.main start")
+        print("✅ Telegram AI Companion готов к работе!")
+        print("💡 Для запуска полного мониторинга используйте:")
+        print("   python3 -m src.cli.main start")
     else:
-        logger.error("❌ Обнаружены проблемы. Проверьте настройки и повторите тест.")
+        print("❌ Обнаружены проблемы. Проверьте настройки и повторите тест.")
 
 
 if __name__ == "__main__":
