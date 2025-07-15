@@ -1,10 +1,10 @@
 """
-Клиент для работы с Telegram через Telethon (Улучшенная версия)
+Клиент для работы с Telegram через Telethon (MVP версия с исправлениями)
 """
 import asyncio
 import random
 import time
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any
 from telethon import TelegramClient, events
 from telethon.errors import (
     FloodWaitError, SessionPasswordNeededError, PhoneCodeInvalidError,
@@ -19,89 +19,28 @@ from ..config.settings import settings, get_session_path
 from ..database.database import db_manager
 
 
-class ConnectionManager:
-    """Менеджер подключений с переподключением и прокси-поддержкой"""
-    
-    def __init__(self, client_instance):
-        self.client = client_instance
-        self.last_connection_check = 0
-        self.connection_check_interval = 30  # проверка каждые 30 сек
-        self.max_reconnect_attempts = 5
-        self.reconnect_delay = 10
-        
-    async def ensure_connected(self) -> bool:
-        """Убеждаемся что клиент подключен, переподключаемся если нужно"""
-        current_time = time.time()
-        
-        # Проверяем не слишком ли часто
-        if current_time - self.last_connection_check < self.connection_check_interval:
-            if self.client.client and self.client.client.is_connected():
-                return True
-        
-        self.last_connection_check = current_time
-        
-        # Проверяем подключение
-        if not self.client.client or not self.client.client.is_connected():
-            logger.warning("🔄 Клиент отключен, пытаемся переподключиться...")
-            return await self._reconnect()
-        
-        return True
-    
-    async def _reconnect(self) -> bool:
-        """Переподключение с повторными попытками"""
-        for attempt in range(self.max_reconnect_attempts):
-            try:
-                logger.info(f"🔄 Попытка переподключения {attempt + 1}/{self.max_reconnect_attempts}")
-                
-                # Закрываем старое соединение если есть
-                if self.client.client and self.client.client.is_connected():
-                    await self.client.client.disconnect()
-                
-                # Переподключаемся
-                if not await self.client.initialize():
-                    raise ConnectionError("Не удалось инициализировать клиент")
-                
-                if not await self.client.connect():
-                    raise ConnectionError("Не удалось подключиться")
-                
-                logger.info("✅ Переподключение успешно")
-                return True
-                
-            except Exception as e:
-                logger.error(f"❌ Попытка {attempt + 1} не удалась: {e}")
-                if attempt < self.max_reconnect_attempts - 1:
-                    await asyncio.sleep(self.reconnect_delay * (attempt + 1))
-        
-        logger.error("❌ Все попытки переподключения исчерпаны")
-        return False
-
-
 class TelegramAIClient:
-    """Telegram клиент с защитой от банов и стабильным подключением"""
+    """Telegram клиент для MVP с надежным подключением"""
     
     def __init__(self):
         self.client: Optional[TelegramClient] = None
         self.is_running = False
         self.session_path = get_session_path()
+        
+        # Rate limiting для безопасности
         self.last_request_time = 0
-        self.flood_wait_until = 0
+        self.min_request_delay = 1.5  # Минимум 1.5 сек между запросами
         
-        # Rate limiting
-        self.min_request_delay = 1
-        self.flood_wait_multiplier = 1.5
-        
-        # Менеджер подключений
-        self.connection_manager = ConnectionManager(self)
-        
-        # Статистика для мониторинга
+        # Статистика
         self.stats = {
             'reconnections': 0,
             'failed_requests': 0,
-            'successful_requests': 0
+            'successful_requests': 0,
+            'messages_sent': 0
         }
         
     async def initialize(self) -> bool:
-        """Инициализация клиента с защитой от банов"""
+        """Инициализация клиента"""
         try:
             self.client = TelegramClient(
                 self.session_path,
@@ -115,76 +54,89 @@ class TelegramAIClient:
                 lang_code="en",
                 system_lang_code="en-US",
                 
-                timeout=60,
-                request_retries=2,  # Снижаем для быстрого переподключения
-                connection_retries=3,
-                retry_delay=3,
+                timeout=30,
+                request_retries=1,
+                connection_retries=2,
+                retry_delay=2,
                 flood_sleep_threshold=60,
                 receive_updates=True,
                 auto_reconnect=True,
             )
             
-            logger.info("Инициализация защищенного Telegram клиента...")
+            logger.info("✅ Telegram клиент инициализирован")
             return True
             
         except Exception as e:
-            logger.error(f"Ошибка инициализации клиента: {e}")
+            logger.error(f"❌ Ошибка инициализации клиента: {e}")
             return False
     
     async def connect(self) -> bool:
-        """Безопасное подключение"""
+        """Подключение к Telegram"""
         try:
             if not self.client:
-                await self.initialize()
+                if not await self.initialize():
+                    return False
             
-            await self._wait_for_flood()
             await self.client.connect()
             
             if not await self.client.is_user_authorized():
-                logger.info("Требуется авторизация...")
-                success = await self._safe_authorize()
+                logger.info("🔐 Требуется авторизация...")
+                success = await self._authorize()
                 if not success:
                     return False
             
-            me = await self._safe_api_call(self.client.get_me)
+            # Получаем информацию о себе
+            me = await self.client.get_me()
             if me:
-                logger.info(f"Подключен как: {me.first_name} (@{me.username})")
-                
-                if await self._check_account_status():
-                    logger.warning("⚠️ Аккаунт может быть ограничен!")
+                logger.info(f"✅ Подключен как: {me.first_name} (@{me.username}) ID: {me.id}")
             
+            # Настраиваем обработчики событий для автоматического сохранения сообщений
             self._setup_event_handlers()
+            
             return True
             
         except UserDeactivatedBanError:
             logger.error("❌ АККАУНТ ЗАБАНЕН!")
             return False
         except Exception as e:
-            logger.error(f"Ошибка подключения: {e}")
+            logger.error(f"❌ Ошибка подключения: {e}")
             return False
     
     async def ensure_connection(self) -> bool:
-        """Публичный метод для проверки подключения перед операциями"""
-        return await self.connection_manager.ensure_connected()
+        """Проверка и восстановление подключения"""
+        if not self.client:
+            return await self.connect()
+        
+        if not self.client.is_connected():
+            logger.warning("🔄 Переподключаемся к Telegram...")
+            try:
+                await self.client.connect()
+                return True
+            except Exception as e:
+                logger.error(f"❌ Ошибка переподключения: {e}")
+                self.stats['reconnections'] += 1
+                return False
+        
+        return True
     
-    async def _safe_authorize(self) -> bool:
-        """Безопасная авторизация"""
+    async def _authorize(self) -> bool:
+        """Авторизация пользователя"""
         try:
-            await self._wait_for_flood()
+            await self._rate_limit()
             await self.client.send_code_request(settings.telegram_phone)
-            logger.info(f"Код отправлен на номер: {settings.telegram_phone}")
+            logger.info(f"📱 Код отправлен на номер: {settings.telegram_phone}")
             
             code = input("Введите код из SMS: ")
             
             try:
-                await self._wait_for_flood()
+                await self._rate_limit()
                 await self.client.sign_in(settings.telegram_phone, code)
                 logger.info("✅ Авторизация успешна!")
                 return True
                 
             except SessionPasswordNeededError:
                 password = input("Введите пароль 2FA: ")
-                await self._wait_for_flood()
+                await self._rate_limit()
                 await self.client.sign_in(password=password)
                 logger.info("✅ Авторизация с 2FA успешна!")
                 return True
@@ -193,119 +145,52 @@ class TelegramAIClient:
                 logger.error("❌ Неверный код!")
                 return False
                 
-        except PhoneNumberInvalidError:
-            logger.error("❌ Неверный номер телефона!")
-            return False
         except FloodWaitError as e:
             logger.warning(f"⏳ Flood wait: {e.seconds} секунд")
-            await asyncio.sleep(e.seconds * self.flood_wait_multiplier)
-            return await self._safe_authorize()
+            await asyncio.sleep(e.seconds)
+            return False
         except Exception as e:
             logger.error(f"❌ Ошибка авторизации: {e}")
             return False
     
-    async def _check_account_status(self) -> bool:
-        """Проверка ограничений аккаунта"""
-        try:
-            await self._safe_api_call(self.client.get_entity, "@spambot")
-            return False
-        except PeerFloodError:
-            return True
-        except:
-            return False
-    
-    async def _wait_for_flood(self):
-        """Ожидание снятия flood ограничений"""
+    async def _rate_limit(self):
+        """Rate limiting для избежания флуда"""
         current_time = time.time()
-        
-        if current_time < self.flood_wait_until:
-            wait_time = self.flood_wait_until - current_time
-            logger.info(f"⏳ Ожидание flood wait: {wait_time:.1f} сек")
-            await asyncio.sleep(wait_time)
-        
         time_since_last = current_time - self.last_request_time
+        
         if time_since_last < self.min_request_delay:
             delay = self.min_request_delay - time_since_last
             await asyncio.sleep(delay)
         
         self.last_request_time = time.time()
     
-    async def _safe_api_call(self, func, *args, **kwargs):
-        """Безопасный вызов API с переподключением"""
-        max_retries = 3
-        
-        for attempt in range(max_retries):
-            try:
-                # Проверяем подключение перед вызовом
-                if not await self.ensure_connection():
-                    self.stats['failed_requests'] += 1
-                    return None
-                
-                await self._wait_for_flood()
-                result = await func(*args, **kwargs)
-                self.stats['successful_requests'] += 1
-                return result
-                
-            except (ConnectionError, TimeoutError, AuthKeyUnregisteredError) as e:
-                logger.warning(f"⚠️ Проблема с подключением (попытка {attempt + 1}): {e}")
-                if attempt < max_retries - 1:
-                    if await self.connection_manager._reconnect():
-                        self.stats['reconnections'] += 1
-                        continue
-                    
-            except FloodWaitError as e:
-                wait_time = e.seconds * self.flood_wait_multiplier
-                logger.warning(f"⏳ Flood wait: {wait_time} сек (попытка {attempt + 1})")
-                
-                self.flood_wait_until = time.time() + wait_time
-                await asyncio.sleep(wait_time)
-                
-                if attempt == max_retries - 1:
-                    raise
-                    
-            except (PeerFloodError, ChatWriteForbiddenError) as e:
-                logger.error(f"❌ Ограничения аккаунта: {e}")
-                self.stats['failed_requests'] += 1
-                return None
-                
-            except SlowModeWaitError as e:
-                logger.warning(f"⏳ Slow mode: {e.seconds} сек")
-                await asyncio.sleep(e.seconds)
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка API: {e}")
-                if attempt == max_retries - 1:
-                    self.stats['failed_requests'] += 1
-                    raise
-                await asyncio.sleep(5)
-        
-        self.stats['failed_requests'] += 1
-        return None
-    
     def _setup_event_handlers(self):
-        """Настройка обработчиков событий"""
+        """Настройка обработчиков для автоматического сохранения входящих сообщений"""
         
         @self.client.on(events.NewMessage(incoming=True))
         async def handle_new_message(event):
-            """Обработка новых сообщений"""
+            """Автоматическое сохранение входящих сообщений"""
             try:
+                # Пропускаем группы и каналы
                 if event.is_channel or event.is_group:
                     return
                 
-                sender = await self._safe_api_call(event.get_sender)
+                sender = await event.get_sender()
                 if not sender or getattr(sender, 'bot', False):
                     return
                 
-                await self._process_incoming_message(event, sender)
+                # Сохраняем в базу данных
+                await self._save_incoming_message(event, sender)
                 
             except Exception as e:
-                logger.error(f"Ошибка обработки сообщения: {e}")
+                logger.error(f"❌ Ошибка обработки входящего сообщения: {e}")
         
-        logger.info("Обработчики событий настроены")
+        logger.info("🎯 Обработчики событий настроены")
     
-    async def _process_incoming_message(self, event, sender: User):
-        """Обработка входящего сообщения"""
+    async def _save_incoming_message(self, event, sender: User):
+        """Сохранение входящего сообщения в БД"""
         try:
+            # Получаем или создаем чат
             chat = db_manager.get_or_create_chat(
                 telegram_user_id=sender.id,
                 username=getattr(sender, 'username', None),
@@ -313,6 +198,7 @@ class TelegramAIClient:
                 last_name=getattr(sender, 'last_name', None)
             )
             
+            # Сохраняем сообщение
             message_text = event.message.text or ""
             db_manager.add_message(
                 chat_id=chat.id,
@@ -324,65 +210,87 @@ class TelegramAIClient:
             logger.info(f"📨 Получено от {sender.first_name} ({sender.id}): {message_text[:50]}...")
             
         except Exception as e:
-            logger.error(f"Ошибка сохранения сообщения: {e}")
+            logger.error(f"❌ Ошибка сохранения сообщения: {e}")
     
-    async def send_message(self, user_id: int, text: str, reply_to_message_id: int = None) -> bool:
-        """Безопасная отправка сообщения с переподключением"""
+    async def send_message(self, user_id: int, text: str) -> bool:
+        """Отправка сообщения с реалистичной имитацией человеческого поведения"""
         try:
-            # КРИТИЧНО: Проверяем подключение перед операцией
             if not await self.ensure_connection():
-                logger.error("Не удалось обеспечить подключение для отправки сообщения")
+                logger.error("❌ Нет подключения для отправки сообщения")
+                self.stats['failed_requests'] += 1
                 return False
             
-            # Сначала прочитываем сообщения
-            await self._safe_api_call(self.client.send_read_acknowledge, user_id)
-            await asyncio.sleep(random.uniform(0.5, 2.0))
+            await self._rate_limit()
             
-            # Показываем "печатает..."
-            typing_duration = min(len(text) * 0.1, 5.0)
-            async with self.client.action(user_id, 'typing'):
+            # 1. ПРОЧИТЫВАЕМ сообщения (ИСПРАВЛЕНО: правильная работа с entity)
+            try:
+                # Отмечаем сообщения как прочитанные
+                await self.client.send_read_acknowledge(user_id)
+                logger.debug(f"✅ Сообщения отмечены как прочитанные для {user_id}")
+                
+                # Реалистичная пауза после прочтения
+                await asyncio.sleep(random.uniform(1.0, 4.0))
+                
+            except Exception as e:
+                logger.debug(f"⚠️ Не удалось отметить как прочитанное: {e}")
+                # Продолжаем выполнение
+            
+            # 2. ПОКАЗЫВАЕМ "печатает..." (ИСПРАВЛЕНО: правильная работа с action)
+            typing_duration = min(len(text) * 0.1 + random.uniform(2.0, 5.0), 10.0)
+            
+            try:
+                # Используем правильный синтаксис для typing action
+                async with self.client.action(user_id, 'typing'):
+                    await asyncio.sleep(typing_duration)
+                    
+                logger.debug(f"⌨️ Показали 'печатает...' {typing_duration:.1f}с для {user_id}")
+                
+            except Exception as e:
+                logger.debug(f"⚠️ Не удалось показать typing: {e}")
+                # Все равно делаем паузу для реалистичности
                 await asyncio.sleep(typing_duration)
             
-            # Отправляем сообщение
-            message = await self._safe_api_call(
-                self.client.send_message,
-                user_id,
-                text,
-                reply_to=reply_to_message_id
-            )
+            # 3. ОТПРАВЛЯЕМ сообщение
+            await self._rate_limit()
+            message = await self.client.send_message(user_id, text)
             
             if message:
+                self.stats['successful_requests'] += 1
+                self.stats['messages_sent'] += 1
                 logger.info(f"✅ Отправлено пользователю {user_id}: {text[:50]}...")
                 return True
             else:
+                self.stats['failed_requests'] += 1
                 logger.warning(f"❌ Не удалось отправить сообщение пользователю {user_id}")
                 return False
                 
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки сообщения: {e}")
+        except FloodWaitError as e:
+            logger.warning(f"⏳ Flood wait {e.seconds}с при отправке в {user_id}")
+            await asyncio.sleep(e.seconds)
+            self.stats['failed_requests'] += 1
             return False
-    
-    async def mark_as_read(self, user_id: int):
-        """Отметить сообщения как прочитанные"""
-        try:
-            if not await self.ensure_connection():
-                return False
-                
-            await self._safe_api_call(self.client.send_read_acknowledge, user_id)
-            logger.debug(f"✅ Сообщения отмечены как прочитанные для {user_id}")
-            return True
+            
+        except (ChatWriteForbiddenError, PeerFloodError) as e:
+            logger.error(f"🚫 Заблокирован для отправки пользователю {user_id}: {e}")
+            self.stats['failed_requests'] += 1
+            return False
+            
         except Exception as e:
-            logger.error(f"❌ Ошибка отметки как прочитано: {e}")
+            logger.error(f"❌ Ошибка отправки сообщения пользователю {user_id}: {e}")
+            self.stats['failed_requests'] += 1
             return False
     
     async def get_dialogs(self) -> List[Dict[str, Any]]:
-        """Безопасное получение диалогов"""
+        """Получение списка диалогов"""
         try:
             if not await self.ensure_connection():
                 return []
             
+            await self._rate_limit()
+            
             dialogs = []
-            async for dialog in self.client.iter_dialogs():
+            async for dialog in self.client.iter_dialogs(limit=50):  # Ограничиваем для безопасности
+                # Только личные чаты с людьми (не ботами)
                 if dialog.is_user and not dialog.entity.bot:
                     dialogs.append({
                         'id': dialog.entity.id,
@@ -392,66 +300,43 @@ class TelegramAIClient:
                         'last_message': dialog.message.text if dialog.message else None
                     })
                 
-                await asyncio.sleep(0.1)  # Пауза между итерациями
+                # Небольшая пауза между итерациями
+                await asyncio.sleep(0.1)
             
+            logger.info(f"📋 Получено {len(dialogs)} диалогов")
             return dialogs
             
         except Exception as e:
-            logger.error(f"Ошибка получения диалогов: {e}")
+            logger.error(f"❌ Ошибка получения диалогов: {e}")
             return []
     
     async def start_monitoring(self):
-        """Безопасный запуск мониторинга"""
+        """Запуск мониторинга событий"""
         self.is_running = True
-        logger.info("🔒 Защищенный мониторинг запущен")
+        logger.info("🔄 Мониторинг Telegram запущен")
         
         try:
-            async with self.client:
-                await self.client.run_until_disconnected()
+            await self.client.run_until_disconnected()
         except Exception as e:
-            logger.error(f"Ошибка мониторинга: {e}")
+            logger.error(f"❌ Ошибка мониторинга: {e}")
         finally:
             self.is_running = False
     
     async def stop_monitoring(self):
-        """Безопасная остановка мониторинга"""
+        """Остановка мониторинга"""
         self.is_running = False
         if self.client and self.client.is_connected():
             await self.client.disconnect()
-        logger.info("🔒 Мониторинг безопасно остановлен")
-    
-    async def get_user_info(self, user_id: int) -> Optional[Dict[str, Any]]:
-        """Получить информацию о пользователе"""
-        try:
-            if not await self.ensure_connection():
-                return None
-                
-            user = await self._safe_api_call(self.client.get_entity, user_id)
-            if user:
-                return {
-                    'id': user.id,
-                    'username': getattr(user, 'username', None),
-                    'first_name': getattr(user, 'first_name', None),
-                    'last_name': getattr(user, 'last_name', None),
-                    'phone': getattr(user, 'phone', None),
-                    'is_bot': getattr(user, 'bot', False)
-                }
-        except Exception as e:
-            logger.error(f"Ошибка получения информации о пользователе {user_id}: {e}")
-        return None
+        logger.info("⏹️ Мониторинг остановлен")
     
     def is_connected(self) -> bool:
         """Проверка подключения"""
         return self.client and self.client.is_connected() if self.client else False
     
     def get_status(self) -> Dict[str, Any]:
-        """Получить расширенный статус клиента"""
+        """Получить статус клиента"""
         return {
             'connected': self.is_connected(),
             'running': self.is_running,
-            'session_exists': bool(self.session_path),
-            'flood_wait_active': time.time() < self.flood_wait_until,
-            'last_request_time': self.last_request_time,
-            'stats': self.stats.copy(),
-            'last_connection_check': self.connection_manager.last_connection_check
+            'stats': self.stats.copy()
         }
