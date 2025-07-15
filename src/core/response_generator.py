@@ -1,28 +1,146 @@
 """
-Генератор ответов с использованием OpenAI API
+Генератор ответов с использованием OpenAI API (Улучшенная версия)
 """
 import json
 import random
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
 from openai import OpenAI
 from loguru import logger
 
 from ..config.settings import settings, character_settings
-from ..database.database import db_manager
+from ..database.database import db_manager, MessageBatch
 from ..utils.helpers import (
-    extract_keywords, is_question, format_chat_history_for_ai,
-    add_random_typo
+    extract_keywords, is_question, add_random_typo
 )
 
 
+class ConversationAnalyzer:
+    """Анализатор контекста разговора"""
+    
+    @staticmethod
+    def analyze_message_batch(batch: MessageBatch) -> Dict[str, Any]:
+        """Анализ пакета сообщений"""
+        if not batch.messages:
+            return {'type': 'empty', 'urgency': 'low', 'emotion': 'neutral'}
+        
+        combined_text = batch.total_text.lower()
+        message_count = len(batch.messages)
+        
+        # Определяем тип пакета
+        message_type = 'single'
+        if message_count > 1:
+            if message_count <= 3:
+                message_type = 'burst'  # короткая серия
+            else:
+                message_type = 'story'  # длинная история
+        
+        # Анализ эмоционального тона
+        emotion = ConversationAnalyzer._detect_emotion_advanced(combined_text)
+        
+        # Определяем срочность ответа
+        urgency = ConversationAnalyzer._calculate_urgency(batch, emotion)
+        
+        # Ключевые темы
+        topics = ConversationAnalyzer._extract_topics(combined_text)
+        
+        # Есть ли вопросы
+        has_questions = any(is_question(msg.text or "") for msg in batch.messages)
+        
+        return {
+            'type': message_type,
+            'emotion': emotion,
+            'urgency': urgency,
+            'topics': topics,
+            'has_questions': has_questions,
+            'message_count': message_count,
+            'time_span_seconds': (batch.last_message_time - batch.first_message_time).total_seconds() if batch.last_message_time and batch.first_message_time else 0
+        }
+    
+    @staticmethod
+    def _detect_emotion_advanced(text: str) -> str:
+        """Продвинутый анализ эмоций"""
+        # Негативные эмоции
+        negative_markers = [
+            'плохо', 'грустно', 'устала', 'тяжело', 'проблема', 'болит', 
+            'расстроена', 'злая', 'бесит', 'достало', 'ужасно', 'кошмар',
+            'депрессия', 'паника', 'стресс', 'переживаю', 'волнуюсь'
+        ]
+        
+        # Позитивные эмоции
+        positive_markers = [
+            'отлично', 'супер', 'классно', 'круто', 'рада', 'счастлива',
+            'прекрасно', 'замечательно', 'восхитительно', 'обожаю', 'люблю',
+            'в восторге', 'кайф', 'шикарно', 'потрясающе'
+        ]
+        
+        # Возбужденные/энергичные
+        excited_markers = [
+            'вау', 'блин', 'офигеть', 'не могу поверить', 'представляешь',
+            'срочно', 'быстрее', 'скорее', 'немедленно', 'прямо сейчас'
+        ]
+        
+        negative_count = sum(1 for word in negative_markers if word in text)
+        positive_count = sum(1 for word in positive_markers if word in text)
+        excited_count = sum(1 for word in excited_markers if word in text)
+        
+        if excited_count > 0:
+            return 'excited'
+        elif negative_count > positive_count:
+            return 'negative'
+        elif positive_count > 0:
+            return 'positive'
+        else:
+            return 'neutral'
+    
+    @staticmethod
+    def _calculate_urgency(batch: MessageBatch, emotion: str) -> str:
+        """Расчет срочности ответа"""
+        message_count = len(batch.messages)
+        
+        # Множественные сообщения = выше срочность
+        if message_count >= 4:
+            return 'high'
+        elif message_count >= 2:
+            return 'medium'
+        
+        # Эмоциональные сообщения требуют быстрого ответа
+        if emotion in ['negative', 'excited']:
+            return 'high'
+        elif emotion == 'positive':
+            return 'medium'
+        
+        return 'low'
+    
+    @staticmethod
+    def _extract_topics(text: str) -> List[str]:
+        """Извлечение тем из текста"""
+        topic_keywords = {
+            'работа': ['работа', 'офис', 'коллега', 'проект', 'начальник', 'карьера', 'увольнение', 'зарплата'],
+            'отношения': ['парень', 'девушка', 'свидание', 'любовь', 'расставание', 'семья', 'родители'],
+            'здоровье': ['болею', 'врач', 'лечение', 'боль', 'таблетки', 'больница', 'самочувствие'],
+            'досуг': ['кино', 'фильм', 'книга', 'игра', 'прогулка', 'ресторан', 'кафе', 'отдых'],
+            'путешествия': ['поездка', 'отпуск', 'путешествие', 'самолет', 'море', 'горы', 'страна'],
+            'учеба': ['университет', 'экзамен', 'учеба', 'диплом', 'курсы', 'преподаватель'],
+            'спорт': ['зал', 'тренировка', 'бег', 'йога', 'спорт', 'фитнес', 'похудение']
+        }
+        
+        found_topics = []
+        for topic, keywords in topic_keywords.items():
+            if any(keyword in text for keyword in keywords):
+                found_topics.append(topic)
+        
+        return found_topics
+
+
 class ResponseGenerator:
-    """Генератор ответов с ИИ"""
+    """Генератор ответов с ИИ (улучшенная версия)"""
     
     def __init__(self):
         try:
             self.openai_client = OpenAI(api_key=settings.openai_api_key)
             self.character = character_settings
+            self.conversation_analyzer = ConversationAnalyzer()
         except Exception as e:
             logger.error(f"Ошибка инициализации OpenAI клиента: {e}")
             raise
@@ -50,8 +168,9 @@ class ResponseGenerator:
         
         return None
     
-    def _build_adaptive_prompt(self, chat_context: Optional[Dict], incoming_message: str, day: int) -> str:
-        """Построение адаптивного промпта"""
+    def _build_advanced_prompt(self, chat_context: Optional[Dict], message_batch: MessageBatch, 
+                             analysis: Dict[str, Any], day: int) -> Tuple[str, str]:
+        """Построение продвинутого промпта для пакета сообщений"""
         base_prompt = self.character.system_prompt
         
         # Информация о персонаже
@@ -91,44 +210,117 @@ class ResponseGenerator:
 - Если meeting_suggestion: аккуратно предложи встретиться
 """
         
-        # Анализ сообщения девушки
+        # Анализ пакета сообщений
         message_analysis = f"""
-АНАЛИЗ ЕЁ СООБЩЕНИЯ: "{incoming_message}"
-- Это вопрос: {'Да' if is_question(incoming_message) else 'Нет'}
-- Ключевые слова: {', '.join(extract_keywords(incoming_message))}
-- Эмоциональный тон: {self._detect_emotion(incoming_message)}
+АНАЛИЗ ЕЁ СООБЩЕНИЙ:
+- Тип пакета: {analysis['type']} ({analysis['message_count']} сообщений)
+- Эмоциональный тон: {analysis['emotion']}
+- Срочность ответа: {analysis['urgency']}
+- Есть вопросы: {'Да' if analysis['has_questions'] else 'Нет'}
+- Темы: {', '.join(analysis['topics']) if analysis['topics'] else 'общие'}
+- Временной промежуток: {analysis['time_span_seconds']:.0f} секунд
 """
         
-        return base_prompt + character_info + context_info + scenario_info + message_analysis
-    
-    def _detect_emotion(self, message: str) -> str:
-        """Определить эмоциональный тон сообщения"""
-        message_lower = message.lower()
+        # Специальные инструкции в зависимости от анализа
+        response_strategy = self._get_response_strategy(analysis)
         
-        if any(word in message_lower for word in ['плохо', 'грустно', 'устала', 'тяжело', 'проблема']):
-            return "негативный"
-        elif any(word in message_lower for word in ['отлично', 'супер', 'классно', 'круто', 'рада']):
-            return "позитивный"
-        elif any(word in message_lower for word in ['скучно', 'норм', 'обычно', 'ничего']):
-            return "нейтральный"
+        system_prompt = base_prompt + character_info + context_info + scenario_info + message_analysis + response_strategy
+        
+        # Пользовательский промпт
+        user_prompt = self._build_user_prompt(message_batch, analysis)
+        
+        return system_prompt, user_prompt
+    
+    def _get_response_strategy(self, analysis: Dict[str, Any]) -> str:
+        """Получить стратегию ответа в зависимости от анализа"""
+        strategy = "\nСТРАТЕГИЯ ОТВЕТА:\n"
+        
+        # Стратегия по типу сообщений
+        if analysis['type'] == 'burst':
+            strategy += "- Это серия быстрых сообщений - отвечай естественно на всю последовательность\n"
+        elif analysis['type'] == 'story':
+            strategy += "- Это длинная история - покажи что внимательно слушал, задай уточняющий вопрос\n"
+        
+        # Стратегия по эмоциям
+        if analysis['emotion'] == 'negative':
+            strategy += "- Она расстроена - будь поддерживающим и сочувствующим\n"
+        elif analysis['emotion'] == 'excited':
+            strategy += "- Она возбуждена/взволнована - разделяй её энергию\n"
+        elif analysis['emotion'] == 'positive':
+            strategy += "- Она в хорошем настроении - поддерживай позитив\n"
+        
+        # Стратегия по срочности
+        if analysis['urgency'] == 'high':
+            strategy += "- Высокая срочность - отвечай быстро и по делу\n"
+        elif analysis['urgency'] == 'medium':
+            strategy += "- Средняя срочность - можешь развить тему\n"
+        
+        # Стратегия по вопросам
+        if analysis['has_questions']:
+            strategy += "- Есть вопросы - обязательно ответь на них\n"
+        
+        return strategy
+    
+    def _build_user_prompt(self, message_batch: MessageBatch, analysis: Dict[str, Any]) -> str:
+        """Построение пользовательского промпта"""
+        if not message_batch.messages:
+            return "Нет новых сообщений для обработки."
+        
+        # Получаем историю разговора
+        chat_id = message_batch.messages[0].chat_id
+        chat_history = db_manager.get_recent_conversation_context(chat_id, limit=15)
+        
+        # Формируем промпт в зависимости от типа сообщений
+        if len(message_batch.messages) == 1:
+            # Одно сообщение
+            message = message_batch.messages[0]
+            user_prompt = f"""
+ИСТОРИЯ ДИАЛОГА:
+{chat_history}
+
+НОВОЕ СООБЩЕНИЕ ОТ НЕЁ:
+[{message.created_at.strftime('%H:%M:%S')}] {message.text}
+
+ИНСТРУКЦИЯ:
+Ответь естественно на её сообщение, учитывая эмоциональный тон ({analysis['emotion']}) и контекст.
+{"Обязательно ответь на её вопрос." if analysis['has_questions'] else ""}
+Максимум 2-3 предложения!
+"""
         else:
-            return "нейтральный"
-    
-    def _get_chat_history(self, chat_id: int) -> str:
-        """Получить историю чата для контекста"""
-        messages = db_manager.get_chat_messages(chat_id, limit=15)  # больше контекста
+            # Множественные сообщения
+            messages_text = message_batch.total_text
+            time_span = analysis['time_span_seconds']
+            
+            user_prompt = f"""
+ИСТОРИЯ ДИАЛОГА:
+{chat_history}
+
+ПАКЕТ НОВЫХ СООБЩЕНИЙ ОТ НЕЁ (за {time_span:.0f} секунд):
+{messages_text}
+
+ИНСТРУКЦИЯ:
+Она отправила {len(message_batch.messages)} сообщений подряд. Это показывает что тема важна для неё.
+Ответь на ВСЮ последовательность сообщений естественно, как живой человек.
+{"Обязательно ответь на все её вопросы." if analysis['has_questions'] else ""}
+Эмоциональный тон: {analysis['emotion']}
+Максимум 2-3 предложения, но покрой все важные моменты!
+"""
         
-        formatted_messages = []
-        for msg in messages[-10:]:  # последние 10 для экономии токенов
-            role = "Ты" if msg.is_from_ai else "Она"
-            if msg.text:
-                formatted_messages.append(f"{role}: {msg.text}")
-        
-        return "\n".join(formatted_messages) if formatted_messages else "Начало диалога"
+        return user_prompt
     
-    async def generate_response(self, chat_id: int, incoming_message: str) -> Optional[str]:
-        """Генерация ответа на сообщение"""
+    async def generate_response_for_batch(self, chat_id: int, message_batch: MessageBatch) -> Optional[str]:
+        """Генерация ответа на пакет сообщений"""
         try:
+            if not message_batch.messages:
+                logger.warning("Пустой пакет сообщений")
+                return None
+            
+            # Анализируем пакет сообщений
+            analysis = self.conversation_analyzer.analyze_message_batch(message_batch)
+            
+            logger.info(f"Обрабатываем пакет: {message_batch.get_context_summary()}")
+            logger.debug(f"Анализ пакета: {analysis}")
+            
             # Получаем контекст чата
             chat_context = db_manager.get_chat_context(chat_id)
             context_dict = {}
@@ -143,31 +335,15 @@ class ResponseGenerator:
             # Определяем день общения
             day = self._get_relationship_stage_days(chat_context)
             
-            # Строим адаптивный промпт
-            system_prompt = self._build_adaptive_prompt(context_dict, incoming_message, day)
-            chat_history = self._get_chat_history(chat_id)
-            
-            # Анализируем входящее сообщение
-            keywords = extract_keywords(incoming_message)
-            emotion = self._detect_emotion(incoming_message)
+            # Строим продвинутый промпт
+            system_prompt, user_prompt = self._build_advanced_prompt(
+                context_dict, message_batch, analysis, day
+            )
             
             # Обновляем контекст чата
-            self._update_chat_context(chat_id, incoming_message, keywords, emotion)
+            self._update_chat_context_from_batch(chat_id, message_batch, analysis)
             
             # Формируем запрос к OpenAI
-            user_prompt = f"""
-ИСТОРИЯ ДИАЛОГА:
-{chat_history}
-
-НОВОЕ СООБЩЕНИЕ ОТ НЕЁ: "{incoming_message}"
-
-ИНСТРУКЦИЯ:
-Ответь естественно, учитывая день общения ({day}) и эмоциональный тон её сообщения ({emotion}).
-Используй сценарий дня если подходит момент.
-Обязательно задай вопрос или проявий интерес к ней.
-Максимум 2 предложения!
-"""
-            
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -186,16 +362,39 @@ class ResponseGenerator:
             # Добавляем случайные опечатки для реалистичности
             final_text = add_random_typo(generated_text)
             
-            logger.info(f"Сгенерирован ответ: {final_text[:50]}...")
+            logger.info(f"Сгенерирован ответ на пакет: {final_text[:50]}...")
             return final_text
             
         except Exception as e:
-            logger.error(f"Ошибка генерации ответа: {e}")
-            return self._get_fallback_response(incoming_message)
+            logger.error(f"Ошибка генерации ответа на пакет: {e}")
+            return self._get_fallback_response_for_batch(message_batch, analysis)
     
-    def _update_chat_context(self, chat_id: int, message: str, keywords: List[str], emotion: str):
-        """Обновление контекста чата с детальной аналитикой"""
+    # LEGACY метод для совместимости
+    async def generate_response(self, chat_id: int, incoming_message: str) -> Optional[str]:
+        """Генерация ответа на одиночное сообщение (устаревший метод)"""
+        logger.warning("Используется устаревший метод generate_response. Рекомендуется использовать generate_response_for_batch")
+        
+        # Создаем фиктивный пакет из одного сообщения
+        from ..database.models import Message
+        fake_message = Message(
+            chat_id=chat_id,
+            text=incoming_message,
+            is_from_ai=False,
+            created_at=datetime.utcnow()
+        )
+        
+        batch = MessageBatch([fake_message])
+        return await self.generate_response_for_batch(chat_id, batch)
+    
+    def _update_chat_context_from_batch(self, chat_id: int, message_batch: MessageBatch, analysis: Dict[str, Any]):
+        """Обновление контекста чата на основе анализа пакета"""
         try:
+            # Извлекаем ключевые слова из всех сообщений
+            all_keywords = []
+            for message in message_batch.messages:
+                if message.text:
+                    all_keywords.extend(extract_keywords(message.text))
+            
             # Расширенный анализ интересов
             interest_keywords = {
                 'спорт': ['спорт', 'футбол', 'бег', 'зал', 'тренировка', 'фитнес', 'йога', 'плавание'],
@@ -211,7 +410,7 @@ class ResponseGenerator:
             
             detected_interests = []
             for interest, interest_words in interest_keywords.items():
-                if any(word in keywords for word in interest_words):
+                if any(word in all_keywords for word in interest_words):
                     detected_interests.append(interest)
             
             # Определяем стадию отношений
@@ -248,24 +447,31 @@ class ResponseGenerator:
         except Exception as e:
             logger.error(f"Ошибка обновления контекста: {e}")
     
-    def _get_fallback_response(self, incoming_message: str) -> str:
-        """Резервные ответы при ошибке API"""
-        emotion = self._detect_emotion(incoming_message)
+    def _get_fallback_response_for_batch(self, message_batch: MessageBatch, analysis: Dict[str, Any]) -> str:
+        """Резервные ответы при ошибке API для пакетов"""
+        emotion = analysis.get('emotion', 'neutral')
+        message_count = len(message_batch.messages)
         
-        if emotion == "негативный":
+        if emotion == "negative":
             fallback_responses = [
-                "Понимаю тебя( Хочешь поговорить об этом?",
-                "Эх, бывает такое... Что случилось?",
-                "Держись! А что именно расстроило?",
+                "Понимаю тебя( Хочешь поговорить об этом подробнее?",
+                "Эх, бывает такое... Что именно расстроило?",
+                "Держись! Расскажи что случилось?",
             ]
-        elif emotion == "позитивный":
+        elif emotion == "positive":
             fallback_responses = [
                 "Круто! Расскажи подробнее)",
                 "Вау, здорово! А что именно так порадовало?",
                 "Отлично! Я за тебя рад)",
             ]
+        elif emotion == "excited":
+            fallback_responses = [
+                "Ого! Чувствую твою энергию) Что такое?",
+                "Вау! Рассказывай быстрее!",
+                "Интригуешь! Жду продолжения)",
+            ]
         else:
-            if is_question(incoming_message):
+            if analysis.get('has_questions'):
                 fallback_responses = [
                     "Хороший вопрос) Думаю... А ты как считаешь?",
                     "Сложно сказать, но скорее да. А у тебя какое мнение?",
@@ -278,11 +484,17 @@ class ResponseGenerator:
                     "Понятно) А что думаешь делать дальше?",
                 ]
         
-        return random.choice(fallback_responses)
+        response = random.choice(fallback_responses)
+        
+        # Добавляем комментарий если много сообщений
+        if message_count > 2:
+            response += f" (Вижу ты написала {message_count} сообщений - тема важная!)"
+        
+        return response
     
-    def should_respond(self, chat_id: int, message: str) -> bool:
-        """ВСЕГДА отвечаем - это главное изменение!"""
-        return True  # Убираем 70% логику - всегда отвечаем!
+    def should_respond(self, chat_id: int, message_batch: MessageBatch) -> bool:
+        """Всегда отвечаем на пакеты сообщений"""
+        return True
     
     def get_character_info(self) -> Dict[str, Any]:
         """Получить информацию о персонаже"""

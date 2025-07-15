@@ -1,26 +1,83 @@
 """
-Клиент для работы с Telegram через Telethon (Best Practices)
+Клиент для работы с Telegram через Telethon (Улучшенная версия)
 """
 import asyncio
 import random
 import time
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from telethon import TelegramClient, events
 from telethon.errors import (
     FloodWaitError, SessionPasswordNeededError, PhoneCodeInvalidError,
     PhoneNumberInvalidError, PeerFloodError, UserDeactivatedBanError,
-    ChatWriteForbiddenError, SlowModeWaitError
+    ChatWriteForbiddenError, SlowModeWaitError, ConnectionError,
+    TimeoutError, AuthKeyUnregisteredError
 )
 from telethon.tl.types import User, Chat, Channel
 from loguru import logger
 
 from ..config.settings import settings, get_session_path
 from ..database.database import db_manager
-# Убираем ненужный импорт, так как используем client.action()
+
+
+class ConnectionManager:
+    """Менеджер подключений с переподключением и прокси-поддержкой"""
+    
+    def __init__(self, client_instance):
+        self.client = client_instance
+        self.last_connection_check = 0
+        self.connection_check_interval = 30  # проверка каждые 30 сек
+        self.max_reconnect_attempts = 5
+        self.reconnect_delay = 10
+        
+    async def ensure_connected(self) -> bool:
+        """Убеждаемся что клиент подключен, переподключаемся если нужно"""
+        current_time = time.time()
+        
+        # Проверяем не слишком ли часто
+        if current_time - self.last_connection_check < self.connection_check_interval:
+            if self.client.client and self.client.client.is_connected():
+                return True
+        
+        self.last_connection_check = current_time
+        
+        # Проверяем подключение
+        if not self.client.client or not self.client.client.is_connected():
+            logger.warning("🔄 Клиент отключен, пытаемся переподключиться...")
+            return await self._reconnect()
+        
+        return True
+    
+    async def _reconnect(self) -> bool:
+        """Переподключение с повторными попытками"""
+        for attempt in range(self.max_reconnect_attempts):
+            try:
+                logger.info(f"🔄 Попытка переподключения {attempt + 1}/{self.max_reconnect_attempts}")
+                
+                # Закрываем старое соединение если есть
+                if self.client.client and self.client.client.is_connected():
+                    await self.client.client.disconnect()
+                
+                # Переподключаемся
+                if not await self.client.initialize():
+                    raise ConnectionError("Не удалось инициализировать клиент")
+                
+                if not await self.client.connect():
+                    raise ConnectionError("Не удалось подключиться")
+                
+                logger.info("✅ Переподключение успешно")
+                return True
+                
+            except Exception as e:
+                logger.error(f"❌ Попытка {attempt + 1} не удалась: {e}")
+                if attempt < self.max_reconnect_attempts - 1:
+                    await asyncio.sleep(self.reconnect_delay * (attempt + 1))
+        
+        logger.error("❌ Все попытки переподключения исчерпаны")
+        return False
 
 
 class TelegramAIClient:
-    """Telegram клиент с защитой от банов"""
+    """Telegram клиент с защитой от банов и стабильным подключением"""
     
     def __init__(self):
         self.client: Optional[TelegramClient] = None
@@ -32,6 +89,16 @@ class TelegramAIClient:
         # Rate limiting
         self.min_request_delay = 1
         self.flood_wait_multiplier = 1.5
+        
+        # Менеджер подключений
+        self.connection_manager = ConnectionManager(self)
+        
+        # Статистика для мониторинга
+        self.stats = {
+            'reconnections': 0,
+            'failed_requests': 0,
+            'successful_requests': 0
+        }
         
     async def initialize(self) -> bool:
         """Инициализация клиента с защитой от банов"""
@@ -49,13 +116,12 @@ class TelegramAIClient:
                 system_lang_code="en-US",
                 
                 timeout=60,
-                request_retries=3,
-                connection_retries=5,
-                retry_delay=5,
+                request_retries=2,  # Снижаем для быстрого переподключения
+                connection_retries=3,
+                retry_delay=3,
                 flood_sleep_threshold=60,
                 receive_updates=True,
                 auto_reconnect=True,
-                # Убрал compression - этот параметр не поддерживается
             )
             
             logger.info("Инициализация защищенного Telegram клиента...")
@@ -96,6 +162,10 @@ class TelegramAIClient:
         except Exception as e:
             logger.error(f"Ошибка подключения: {e}")
             return False
+    
+    async def ensure_connection(self) -> bool:
+        """Публичный метод для проверки подключения перед операциями"""
+        return await self.connection_manager.ensure_connected()
     
     async def _safe_authorize(self) -> bool:
         """Безопасная авторизация"""
@@ -161,15 +231,28 @@ class TelegramAIClient:
         self.last_request_time = time.time()
     
     async def _safe_api_call(self, func, *args, **kwargs):
-        """Безопасный вызов API"""
+        """Безопасный вызов API с переподключением"""
         max_retries = 3
         
         for attempt in range(max_retries):
             try:
+                # Проверяем подключение перед вызовом
+                if not await self.ensure_connection():
+                    self.stats['failed_requests'] += 1
+                    return None
+                
                 await self._wait_for_flood()
                 result = await func(*args, **kwargs)
+                self.stats['successful_requests'] += 1
                 return result
                 
+            except (ConnectionError, TimeoutError, AuthKeyUnregisteredError) as e:
+                logger.warning(f"⚠️ Проблема с подключением (попытка {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    if await self.connection_manager._reconnect():
+                        self.stats['reconnections'] += 1
+                        continue
+                    
             except FloodWaitError as e:
                 wait_time = e.seconds * self.flood_wait_multiplier
                 logger.warning(f"⏳ Flood wait: {wait_time} сек (попытка {attempt + 1})")
@@ -182,6 +265,7 @@ class TelegramAIClient:
                     
             except (PeerFloodError, ChatWriteForbiddenError) as e:
                 logger.error(f"❌ Ограничения аккаунта: {e}")
+                self.stats['failed_requests'] += 1
                 return None
                 
             except SlowModeWaitError as e:
@@ -191,9 +275,11 @@ class TelegramAIClient:
             except Exception as e:
                 logger.error(f"❌ Ошибка API: {e}")
                 if attempt == max_retries - 1:
+                    self.stats['failed_requests'] += 1
                     raise
                 await asyncio.sleep(5)
         
+        self.stats['failed_requests'] += 1
         return None
     
     def _setup_event_handlers(self):
@@ -241,13 +327,14 @@ class TelegramAIClient:
             logger.error(f"Ошибка сохранения сообщения: {e}")
     
     async def send_message(self, user_id: int, text: str, reply_to_message_id: int = None) -> bool:
-        """Безопасная отправка сообщения"""
+        """Безопасная отправка сообщения с переподключением"""
         try:
-            if not self.client:
-                logger.error("Клиент не инициализирован")
+            # КРИТИЧНО: Проверяем подключение перед операцией
+            if not await self.ensure_connection():
+                logger.error("Не удалось обеспечить подключение для отправки сообщения")
                 return False
             
-            # КРИТИЧНО: Сначала прочитываем сообщения
+            # Сначала прочитываем сообщения
             await self._safe_api_call(self.client.send_read_acknowledge, user_id)
             await asyncio.sleep(random.uniform(0.5, 2.0))
             
@@ -278,15 +365,20 @@ class TelegramAIClient:
     async def mark_as_read(self, user_id: int):
         """Отметить сообщения как прочитанные"""
         try:
+            if not await self.ensure_connection():
+                return False
+                
             await self._safe_api_call(self.client.send_read_acknowledge, user_id)
             logger.debug(f"✅ Сообщения отмечены как прочитанные для {user_id}")
+            return True
         except Exception as e:
             logger.error(f"❌ Ошибка отметки как прочитано: {e}")
+            return False
     
     async def get_dialogs(self) -> List[Dict[str, Any]]:
         """Безопасное получение диалогов"""
         try:
-            if not self.client:
+            if not await self.ensure_connection():
                 return []
             
             dialogs = []
@@ -331,6 +423,9 @@ class TelegramAIClient:
     async def get_user_info(self, user_id: int) -> Optional[Dict[str, Any]]:
         """Получить информацию о пользователе"""
         try:
+            if not await self.ensure_connection():
+                return None
+                
             user = await self._safe_api_call(self.client.get_entity, user_id)
             if user:
                 return {
@@ -350,11 +445,13 @@ class TelegramAIClient:
         return self.client and self.client.is_connected() if self.client else False
     
     def get_status(self) -> Dict[str, Any]:
-        """Получить статус клиента"""
+        """Получить расширенный статус клиента"""
         return {
             'connected': self.is_connected(),
             'running': self.is_running,
             'session_exists': bool(self.session_path),
             'flood_wait_active': time.time() < self.flood_wait_until,
-            'last_request_time': self.last_request_time
+            'last_request_time': self.last_request_time,
+            'stats': self.stats.copy(),
+            'last_connection_check': self.connection_manager.last_connection_check
         }
