@@ -19,8 +19,12 @@ class ResponseGenerator:
     """Генератор ответов с ИИ"""
     
     def __init__(self):
-        self.openai_client = OpenAI(api_key=settings.openai_api_key)
-        self.character = character_settings
+        try:
+            self.openai_client = OpenAI(api_key=settings.openai_api_key)
+            self.character = character_settings
+        except Exception as e:
+            logger.error(f"Ошибка инициализации OpenAI клиента: {e}")
+            raise
         
     def _build_system_prompt(self, chat_context: Optional[Dict] = None) -> str:
         """Построение системного промпта с учетом контекста"""
