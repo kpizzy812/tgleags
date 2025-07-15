@@ -34,6 +34,44 @@ def setup_logging():
     )
 
 
+def get_smart_delay(hour: int, emotion: str, relationship_stage: str) -> int:
+    """Умная задержка в зависимости от времени и контекста"""
+    base_delay = settings.min_response_delay
+    max_delay = settings.max_response_delay
+    
+    # Задержки по времени суток
+    if 0 <= hour < 7:  # Ночь - долгие ответы
+        time_multiplier = 3.0
+    elif 7 <= hour < 9:  # Утро - средние ответы  
+        time_multiplier = 2.0
+    elif 9 <= hour < 18:  # Рабочий день - быстрые ответы
+        time_multiplier = 1.0
+    elif 18 <= hour < 23:  # Вечер - средние ответы
+        time_multiplier = 1.5
+    else:  # Поздний вечер - медленные ответы
+        time_multiplier = 2.5
+    
+    # Корректировка по эмоции
+    if emotion == "негативный":
+        emotion_multiplier = 0.7  # Быстрее отвечаем на грустные сообщения
+    elif emotion == "позитивный":  
+        emotion_multiplier = 1.2  # Чуть медленнее на радостные
+    else:
+        emotion_multiplier = 1.0
+    
+    # Корректировка по стадии отношений
+    if relationship_stage in ['initial']:
+        stage_multiplier = 1.8  # В начале медленнее
+    elif relationship_stage in ['warming_up', 'friendly']:
+        stage_multiplier = 1.0  # Обычно
+    else:  # close, intimate
+        stage_multiplier = 0.8  # Быстрее отвечаем близким
+    
+    # Итоговая задержка
+    delay = int(base_delay * time_multiplier * emotion_multiplier * stage_multiplier)
+    return max(base_delay, min(delay, max_delay))
+
+
 def get_random_delay(min_delay: int = None, max_delay: int = None) -> int:
     """Получить случайную задержку для имитации человеческого поведения"""
     min_delay = min_delay or settings.min_response_delay

@@ -4,6 +4,7 @@
 import json
 import random
 from typing import List, Dict, Any, Optional
+from datetime import datetime, timedelta
 from openai import OpenAI
 from loguru import logger
 
@@ -11,7 +12,7 @@ from ..config.settings import settings, character_settings
 from ..database.database import db_manager
 from ..utils.helpers import (
     extract_keywords, is_question, format_chat_history_for_ai,
-    should_respond_to_message, add_random_typo
+    add_random_typo
 )
 
 
@@ -25,50 +26,100 @@ class ResponseGenerator:
         except Exception as e:
             logger.error(f"Ошибка инициализации OpenAI клиента: {e}")
             raise
+    
+    def _get_relationship_stage_days(self, chat_context) -> int:
+        """Определить количество дней общения"""
+        if not chat_context:
+            return 1
         
-    def _build_system_prompt(self, chat_context: Optional[Dict] = None) -> str:
-        """Построение системного промпта с учетом контекста"""
+        days_diff = (datetime.utcnow() - chat_context.updated_at).days
+        return max(1, chat_context.messages_count // 10)  # примерно 10 сообщений = 1 день
+    
+    def _get_scenario_for_day(self, day: int) -> Optional[str]:
+        """Получить сценарий для конкретного дня"""
+        scenarios = self.character.relationship_scenarios
+        
+        if day == 2 and random.random() < 0.3:  # 30% шанс в день 2
+            return "work_stress"
+        elif day == 3 and random.random() < 0.4:  # 40% шанс в день 3  
+            return "family_call"
+        elif day >= 5 and random.random() < 0.2:  # 20% шанс после 5 дня
+            return "weekend_plans"
+        elif day >= 7 and random.random() < 0.15:  # 15% шанс после недели
+            return "meeting_suggestion"
+        
+        return None
+    
+    def _build_adaptive_prompt(self, chat_context: Optional[Dict], incoming_message: str, day: int) -> str:
+        """Построение адаптивного промпта"""
         base_prompt = self.character.system_prompt
         
-        # Добавляем информацию о персонаже
+        # Информация о персонаже
         character_info = f"""
-        
-Информация о тебе:
-- Имя: {self.character.name}
-- Возраст: {self.character.age}
-- Профессия: {self.character.occupation}
-- Город: {self.character.location}
-- Интересы: {', '.join(self.character.interests)}
-- Характер: {', '.join(self.character.personality_traits)}
+ТВОЯ БИОГРАФИЯ:
+{self.character.background_story}
 
-Правила общения:
-1. Отвечай кратко (1-2 предложения)
-2. Используй естественную речь с сокращениями
-3. Проявляй интерес к собеседнице
-4. Задавай встречные вопросы
-5. Избегай шаблонных фраз
-6. Будь дружелюбным и слегка флиртующим
-        """
+ТВОИ ИНТЕРЕСЫ: {', '.join(self.character.interests)}
+ТВОЙ ХАРАКТЕР: {', '.join(self.character.personality_traits)}
+
+ИСТОРИИ ИЗ ЖИЗНИ (используй по ситуации):
+"""
+        for story_key, story_text in self.character.life_stories.items():
+            character_info += f"- {story_text}\n"
         
-        # Добавляем контекст диалога если есть
+        # Контекст диалога
+        context_info = ""
         if chat_context:
+            detected_interests = json.loads(chat_context.get('detected_interests', '[]'))
             context_info = f"""
-            
-Контекст диалога:
+КОНТЕКСТ ДИАЛОГА:
+- День общения: {day}
 - Стадия отношений: {chat_context.get('relationship_stage', 'начальная')}
-- Количество сообщений: {chat_context.get('messages_count', 0)}
-- Интересы собеседницы: {chat_context.get('detected_interests', 'не определены')}
-            """
-            character_info += context_info
+- Всего сообщений: {chat_context.get('messages_count', 0)}
+- Её интересы: {', '.join(detected_interests) if detected_interests else 'изучаешь'}
+"""
         
-        return base_prompt + character_info
+        # Сценарий дня (если есть)
+        scenario = self._get_scenario_for_day(day)
+        scenario_info = ""
+        if scenario:
+            scenario_info = f"""
+СЦЕНАРИЙ ДНЯ: {scenario}
+- Если work_stress: расскажи о сложностях на работе, спроси совета
+- Если family_call: упомяни звонок от мамы/семьи
+- Если weekend_plans: обсуди планы на выходные, намекни на встречу
+- Если meeting_suggestion: аккуратно предложи встретиться
+"""
+        
+        # Анализ сообщения девушки
+        message_analysis = f"""
+АНАЛИЗ ЕЁ СООБЩЕНИЯ: "{incoming_message}"
+- Это вопрос: {'Да' if is_question(incoming_message) else 'Нет'}
+- Ключевые слова: {', '.join(extract_keywords(incoming_message))}
+- Эмоциональный тон: {self._detect_emotion(incoming_message)}
+"""
+        
+        return base_prompt + character_info + context_info + scenario_info + message_analysis
+    
+    def _detect_emotion(self, message: str) -> str:
+        """Определить эмоциональный тон сообщения"""
+        message_lower = message.lower()
+        
+        if any(word in message_lower for word in ['плохо', 'грустно', 'устала', 'тяжело', 'проблема']):
+            return "негативный"
+        elif any(word in message_lower for word in ['отлично', 'супер', 'классно', 'круто', 'рада']):
+            return "позитивный"
+        elif any(word in message_lower for word in ['скучно', 'норм', 'обычно', 'ничего']):
+            return "нейтральный"
+        else:
+            return "нейтральный"
     
     def _get_chat_history(self, chat_id: int) -> str:
         """Получить историю чата для контекста"""
-        messages = db_manager.get_chat_messages(chat_id, limit=10)
+        messages = db_manager.get_chat_messages(chat_id, limit=15)  # больше контекста
         
         formatted_messages = []
-        for msg in messages:
+        for msg in messages[-10:]:  # последние 10 для экономии токенов
             role = "Ты" if msg.is_from_ai else "Она"
             if msg.text:
                 formatted_messages.append(f"{role}: {msg.text}")
@@ -89,29 +140,37 @@ class ResponseGenerator:
                     'detected_interests': chat_context.detected_interests
                 }
             
-            # Строим промпт
-            system_prompt = self._build_system_prompt(context_dict)
+            # Определяем день общения
+            day = self._get_relationship_stage_days(chat_context)
+            
+            # Строим адаптивный промпт
+            system_prompt = self._build_adaptive_prompt(context_dict, incoming_message, day)
             chat_history = self._get_chat_history(chat_id)
             
             # Анализируем входящее сообщение
             keywords = extract_keywords(incoming_message)
-            is_quest = is_question(incoming_message)
+            emotion = self._detect_emotion(incoming_message)
             
             # Обновляем контекст чата
-            self._update_chat_context(chat_id, incoming_message, keywords)
+            self._update_chat_context(chat_id, incoming_message, keywords, emotion)
             
             # Формируем запрос к OpenAI
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"""
-Последние сообщения диалога:
+            user_prompt = f"""
+ИСТОРИЯ ДИАЛОГА:
 {chat_history}
 
-Новое сообщение от девушки: "{incoming_message}"
+НОВОЕ СООБЩЕНИЕ ОТ НЕЁ: "{incoming_message}"
 
-Ответь естественно, как мужчина, который флиртует и проявляет интерес к собеседнице.
-{'Девушка задала вопрос, обязательно ответь на него.' if is_quest else ''}
-"""}
+ИНСТРУКЦИЯ:
+Ответь естественно, учитывая день общения ({day}) и эмоциональный тон её сообщения ({emotion}).
+Используй сценарий дня если подходит момент.
+Обязательно задай вопрос или проявий интерес к ней.
+Максимум 2 предложения!
+"""
+            
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
             ]
             
             # Отправляем запрос к OpenAI
@@ -134,17 +193,20 @@ class ResponseGenerator:
             logger.error(f"Ошибка генерации ответа: {e}")
             return self._get_fallback_response(incoming_message)
     
-    def _update_chat_context(self, chat_id: int, message: str, keywords: List[str]):
-        """Обновление контекста чата"""
+    def _update_chat_context(self, chat_id: int, message: str, keywords: List[str], emotion: str):
+        """Обновление контекста чата с детальной аналитикой"""
         try:
-            # Анализируем интересы
+            # Расширенный анализ интересов
             interest_keywords = {
-                'спорт': ['спорт', 'футбол', 'бег', 'зал', 'тренировка', 'фитнес'],
-                'путешествия': ['путешествие', 'отпуск', 'море', 'горы', 'страна', 'город'],
-                'кино': ['фильм', 'кино', 'сериал', 'актер', 'режиссер'],
-                'музыка': ['музыка', 'песня', 'концерт', 'группа', 'исполнитель'],
-                'работа': ['работа', 'офис', 'коллега', 'проект', 'карьера', 'начальник'],
-                'еда': ['кафе', 'ресторан', 'готовить', 'рецепт', 'вкусно', 'еда']
+                'спорт': ['спорт', 'футбол', 'бег', 'зал', 'тренировка', 'фитнес', 'йога', 'плавание'],
+                'путешествия': ['путешествие', 'отпуск', 'море', 'горы', 'страна', 'город', 'поездка', 'отдых'],
+                'кино': ['фильм', 'кино', 'сериал', 'актер', 'режиссер', 'нетфликс'],
+                'музыка': ['музыка', 'песня', 'концерт', 'группа', 'исполнитель', 'альбом'],
+                'работа': ['работа', 'офис', 'коллега', 'проект', 'карьера', 'начальник', 'учеба'],
+                'еда': ['кафе', 'ресторан', 'готовить', 'рецепт', 'вкусно', 'еда', 'кухня'],
+                'животные': ['кот', 'собака', 'животные', 'питомец', 'котик', 'пес'],
+                'книги': ['книга', 'читать', 'автор', 'роман', 'литература'],
+                'хобби': ['рисование', 'фотография', 'творчество', 'рукоделие', 'вязание']
             }
             
             detected_interests = []
@@ -155,13 +217,17 @@ class ResponseGenerator:
             # Определяем стадию отношений
             context = db_manager.get_chat_context(chat_id)
             current_stage = context.relationship_stage if context else 'initial'
-            
             message_count = context.messages_count if context else 0
             
-            if message_count > 20:
+            # Более точная стадия отношений
+            if message_count > 50:
+                new_stage = 'intimate'
+            elif message_count > 30:
                 new_stage = 'close'
-            elif message_count > 5:
+            elif message_count > 15:
                 new_stage = 'friendly'
+            elif message_count > 5:
+                new_stage = 'warming_up'
             else:
                 new_stage = 'initial'
             
@@ -174,6 +240,7 @@ class ResponseGenerator:
             
             if new_stage != current_stage:
                 update_data['relationship_stage'] = new_stage
+                logger.info(f"Стадия отношений изменена: {current_stage} → {new_stage}")
             
             if update_data:
                 db_manager.update_chat_context(chat_id, **update_data)
@@ -183,49 +250,39 @@ class ResponseGenerator:
     
     def _get_fallback_response(self, incoming_message: str) -> str:
         """Резервные ответы при ошибке API"""
-        fallback_responses = [
-            "Интересно, расскажи подробнее)",
-            "А я как раз думал о том же!",
-            "Согласен, это правда важно",
-            "Хм, а как ты к этому относишься?",
-            "Точно! А у тебя есть опыт в этом?",
-            "Понимаю тебя. А что думаешь делать дальше?",
-            "Это здорово! Мне тоже нравится такое",
-            "А я вот недавно тоже с таким сталкивался"
-        ]
+        emotion = self._detect_emotion(incoming_message)
         
-        # Специальные ответы на вопросы
-        if is_question(incoming_message):
-            question_responses = [
-                "Хороший вопрос) Мне кажется...",
-                "Думаю, что да. А ты как считаешь?",
-                "Сложно сказать, но по опыту...",
-                "А ты сама как думаешь об этом?",
-                "Интересно спрашиваешь) По-моему..."
+        if emotion == "негативный":
+            fallback_responses = [
+                "Понимаю тебя( Хочешь поговорить об этом?",
+                "Эх, бывает такое... Что случилось?",
+                "Держись! А что именно расстроило?",
             ]
-            return random.choice(question_responses)
+        elif emotion == "позитивный":
+            fallback_responses = [
+                "Круто! Расскажи подробнее)",
+                "Вау, здорово! А что именно так порадовало?",
+                "Отлично! Я за тебя рад)",
+            ]
+        else:
+            if is_question(incoming_message):
+                fallback_responses = [
+                    "Хороший вопрос) Думаю... А ты как считаешь?",
+                    "Сложно сказать, но скорее да. А у тебя какое мнение?",
+                    "Интересно спрашиваешь) По-моему..."
+                ]
+            else:
+                fallback_responses = [
+                    "Интересно! А ты часто этим занимаешься?",
+                    "Согласен) А как тебе это нравится?",
+                    "Понятно) А что думаешь делать дальше?",
+                ]
         
         return random.choice(fallback_responses)
     
     def should_respond(self, chat_id: int, message: str) -> bool:
-        """Определить, нужно ли отвечать на сообщение"""
-        try:
-            # Получаем последнее сообщение ИИ
-            messages = db_manager.get_chat_messages(chat_id, limit=5)
-            last_ai_message = None
-            
-            for msg in reversed(messages):
-                if msg.is_from_ai:
-                    last_ai_message = msg
-                    break
-            
-            last_ai_time = last_ai_message.created_at if last_ai_message else None
-            
-            return should_respond_to_message(message, last_ai_time)
-            
-        except Exception as e:
-            logger.error(f"Ошибка проверки необходимости ответа: {e}")
-            return True  # По умолчанию отвечаем
+        """ВСЕГДА отвечаем - это главное изменение!"""
+        return True  # Убираем 70% логику - всегда отвечаем!
     
     def get_character_info(self) -> Dict[str, Any]:
         """Получить информацию о персонаже"""
@@ -235,5 +292,6 @@ class ResponseGenerator:
             'occupation': self.character.occupation,
             'location': self.character.location,
             'interests': self.character.interests,
-            'personality': self.character.personality_traits
+            'personality': self.character.personality_traits,
+            'background': self.character.background_story
         }

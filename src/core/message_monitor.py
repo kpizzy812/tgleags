@@ -190,10 +190,7 @@ class MessageMonitor:
             message_text = response['message_text']
             reply_to_id = response.get('reply_to_message_id')
             
-            # Отмечаем сообщения как прочитанные
-            await self.telegram_client.mark_as_read(telegram_user_id)
-            
-            # Отправляем сообщение через Telegram
+            # Отправляем сообщение через Telegram (прочтение происходит внутри send_message)
             success = await self.telegram_client.send_message(
                 telegram_user_id,
                 message_text,
