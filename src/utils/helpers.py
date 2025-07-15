@@ -146,38 +146,6 @@ def format_chat_history_for_ai(messages: List[Dict[str, Any]]) -> str:
     return "\n".join(formatted_messages)
 
 
-def should_respond_to_message(text: str, last_ai_message_time: datetime = None) -> bool:
-    """Определить, нужно ли отвечать на сообщение"""
-    if not text:
-        return False
-    
-    # Не отвечаем слишком часто
-    if last_ai_message_time:
-        time_since_last = datetime.utcnow() - last_ai_message_time
-        if time_since_last.total_seconds() < 30:  # Минимум 30 секунд между ответами
-            return False
-    
-    # Простые правила для определения необходимости ответа
-    text_lower = text.lower()
-    
-    # Всегда отвечаем на вопросы
-    if is_question(text):
-        return True
-    
-    # Отвечаем на приветствия
-    greetings = ['привет', 'приветик', 'здравствуй', 'добрый', 'хай', 'hello', 'hi']
-    if any(greeting in text_lower for greeting in greetings):
-        return True
-    
-    # Отвечаем на эмоциональные сообщения
-    emotional_words = ['спасибо', 'классно', 'супер', 'отлично', 'ужасно', 'плохо', 'грустно']
-    if any(word in text_lower for word in emotional_words):
-        return True
-    
-    # В остальных случаях отвечаем с вероятностью 70%
-    return random.random() < 0.7
-
-
 async def simulate_typing(duration: int = None):
     """Имитация печатания (задержка)"""
     duration = duration or settings.typing_duration

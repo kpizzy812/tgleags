@@ -8,7 +8,7 @@ from loguru import logger
 
 from ..config.settings import settings
 from ..database.database import db_manager
-from ..utils.helpers import get_random_delay
+from ..utils.helpers import get_random_delay, get_smart_delay
 from .telegram_client import TelegramAIClient
 from .response_generator import ResponseGenerator
 
