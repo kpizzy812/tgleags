@@ -15,6 +15,174 @@ from src.config.settings import settings, character_settings
 from src.core.message_monitor import MessageMonitor
 from src.database.database import db_manager
 from src.utils.helpers import setup_logging
+import json
+
+@cli.command()
+def status():
+    """Показать расширенный статус приложения"""
+    async def _status():
+        status = await app.get_status()
+        
+        click.echo("\n📊 Статус Telegram AI Companion:")
+        click.echo(f"   Мониторинг: {'🟢 Активен' if status.get('monitoring') else '🔴 Остановлен'}")
+        click.echo(f"   Telegram: {'🟢 Подключен' if status.get('telegram_connected') else '🔴 Отключен'}")
+        click.echo(f"   Очередь ответов: {status.get('response_queue_size', 0)}")
+        click.echo(f"   Активные чаты: {status.get('active_chats', 0)}")
+        
+        # Статистика Telegram клиента
+        telegram_stats = status.get('telegram_stats', {})
+        if telegram_stats:
+            click.echo(f"\n📱 Telegram статистика:")
+            click.echo(f"   Отправлено сообщений: {telegram_stats.get('messages_sent', 0)}")
+            click.echo(f"   Успешных запросов: {telegram_stats.get('successful_requests', 0)}")
+            click.echo(f"   Ошибок: {telegram_stats.get('failed_requests', 0)}")
+            click.echo(f"   Переподключений: {telegram_stats.get('reconnections', 0)}")
+        
+        # Очередь ответов
+        if status.get('response_queue_size', 0) > 0:
+            click.echo(f"\n⏰ Очередь ответов:")
+            queue_info = status.get('queue_info', [])
+            for item in queue_info[:3]:  # Показываем первые 3
+                time_to_send = item.get('time_to_send_seconds', 0)
+                if time_to_send > 0:
+                    click.echo(f"   Чат {item['chat_id']}: через {time_to_send:.0f}с - {item['message_preview']}")
+                else:
+                    click.echo(f"   Чат {item['chat_id']}: готов к отправке - {item['message_preview']}")
+    
+    asyncio.run(_status())
+
+
+@cli.command()
+@click.option('--chat-id', '-c', type=int, help='ID чата для статистики')
+def stats(chat_id: int):
+    """Показать статистику диалогов"""
+    async def _stats():
+        if chat_id:
+            # Статистика конкретного чата
+            stats = db_manager.get_conversation_stats(chat_id)
+            if not stats['total_messages']:
+                click.echo(f"📭 Нет сообщений в чате {chat_id}")
+                return
+            
+            click.echo(f"\n📊 Статистика чата {chat_id}:")
+            click.echo(f"   Всего сообщений: {stats['total_messages']}")
+            click.echo(f"   От пользователя: {stats['user_messages']}")
+            click.echo(f"   От ИИ: {stats['ai_messages']}")
+            click.echo(f"   Процент ответов: {stats['response_rate']:.1%}")
+            
+            if stats['conversation_duration_seconds']:
+                duration_hours = stats['conversation_duration_seconds'] / 3600
+                click.echo(f"   Длительность диалога: {duration_hours:.1f} часов")
+                click.echo(f"   Сообщений в день: {stats['messages_per_day']:.1f}")
+            
+            # Контекст чата
+            context = db_manager.get_chat_context(chat_id)
+            if context:
+                click.echo(f"\n🎯 Контекст:")
+                click.echo(f"   Стадия отношений: {context.relationship_stage}")
+                if context.detected_interests:
+                    interests = json.loads(context.detected_interests)
+                    click.echo(f"   Интересы: {', '.join(interests)}")
+        else:
+            # Общая статистика
+            active_chats = db_manager.get_active_chats()
+            click.echo(f"\n📊 Общая статистика:")
+            click.echo(f"   Активных чатов: {len(active_chats)}")
+            
+            total_messages = 0
+            total_ai_messages = 0
+            for chat in active_chats:
+                stats = db_manager.get_conversation_stats(chat.id)
+                total_messages += stats['total_messages']
+                total_ai_messages += stats['ai_messages']
+            
+            click.echo(f"   Всего сообщений: {total_messages}")
+            click.echo(f"   Ответов ИИ: {total_ai_messages}")
+            
+            if active_chats:
+                click.echo(f"\n💬 Топ активных чатов:")
+                for chat in active_chats[:5]:
+                    stats = db_manager.get_conversation_stats(chat.id)
+                    name = chat.first_name or "Без имени"
+                    click.echo(f"   {name} ({chat.id}): {stats['total_messages']} сообщений")
+    
+    asyncio.run(_stats())
+
+
+@cli.command()
+def queue():
+    """Показать очередь ответов"""
+    async def _queue():
+        status = await app.get_status()
+        queue_size = status.get('response_queue_size', 0)
+        
+        if queue_size == 0:
+            click.echo("📭 Очередь ответов пуста")
+            return
+        
+        click.echo(f"\n⏰ Очередь ответов ({queue_size} элементов):")
+        click.echo("-" * 80)
+        
+        queue_info = status.get('queue_info', [])
+        for i, item in enumerate(queue_info, 1):
+            time_to_send = item.get('time_to_send_seconds', 0)
+            delay_reason = item.get('delay_reason', 'unknown')
+            
+            if time_to_send > 0:
+                if time_to_send < 60:
+                    time_str = f"{time_to_send:.0f}с"
+                else:
+                    time_str = f"{time_to_send/60:.1f}мин"
+                status_str = f"через {time_str}"
+            else:
+                status_str = "готов к отправке"
+            
+            click.echo(f"{i}. Чат {item['chat_id']} - {status_str}")
+            click.echo(f"   Причина задержки: {delay_reason}")
+            click.echo(f"   Сообщение: {item['message_preview']}")
+            click.echo()
+    
+    asyncio.run(_queue())
+
+
+@cli.command()
+def unanswered():
+    """Показать чаты с неотвеченными сообщениями"""
+    unanswered_chats = db_manager.get_unanswered_chats(hours_threshold=2)
+    
+    if not unanswered_chats:
+        click.echo("✅ Нет чатов с неотвеченными сообщениями")
+        return
+    
+    click.echo(f"\n⚠️ Чаты с неотвеченными сообщениями ({len(unanswered_chats)}):")
+    click.echo("-" * 60)
+    
+    for chat in unanswered_chats:
+        name = chat.first_name or "Без имени"
+        username = f"@{chat.username}" if chat.username else ""
+        
+        # Получаем последнее сообщение
+        messages = db_manager.get_chat_messages(chat.id, limit=1)
+        if messages:
+            last_msg = messages[-1]
+            time_ago = (datetime.utcnow() - last_msg.created_at).total_seconds() / 3600
+            click.echo(f"👤 {name} {username} (ID: {chat.id})")
+            click.echo(f"   Последнее сообщение {time_ago:.1f}ч назад: {last_msg.text[:50]}...")
+            click.echo()
+
+
+@cli.command()
+@click.option('--days', '-d', default=7, help='Количество дней для очистки')
+def cleanup(days: int):
+    """Очистка старых сообщений"""
+    click.echo(f"🧹 Очистка сообщений старше {days} дней...")
+    
+    deleted_count = db_manager.cleanup_old_messages(days_to_keep=days)
+    
+    if deleted_count > 0:
+        click.echo(f"✅ Удалено {deleted_count} старых сообщений")
+    else:
+        click.echo("📭 Нет сообщений для удаления")
 
 
 class TelegramAIApp:
