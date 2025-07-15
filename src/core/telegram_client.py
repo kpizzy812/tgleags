@@ -16,7 +16,7 @@ from loguru import logger
 
 from ..config.settings import settings, get_session_path
 from ..database.database import db_manager
-from ..utils.helpers import simulate_typing
+# Убираем ненужный импорт, так как используем client.action()
 
 
 class TelegramAIClient:
@@ -55,7 +55,7 @@ class TelegramAIClient:
                 flood_sleep_threshold=60,
                 receive_updates=True,
                 auto_reconnect=True,
-                compression=True,
+                # Убрал compression - этот параметр не поддерживается
             )
             
             logger.info("Инициализация защищенного Telegram клиента...")

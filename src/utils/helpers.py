@@ -146,12 +146,6 @@ def format_chat_history_for_ai(messages: List[Dict[str, Any]]) -> str:
     return "\n".join(formatted_messages)
 
 
-async def simulate_typing(duration: int = None):
-    """Имитация печатания (задержка)"""
-    duration = duration or settings.typing_duration
-    await asyncio.sleep(duration)
-
-
 def get_time_based_greeting() -> str:
     """Получить приветствие в зависимости от времени суток"""
     current_hour = datetime.now().hour
