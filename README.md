@@ -24,20 +24,20 @@
 ### 1. Клонирование репозитория
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/kpizzy812/tgleags
 cd telegram_ai_companion
 ```
 
 ### 2. Создание виртуального окружения
 
 ```bash
-python -m venv venv
+python -m venv .venv
 
 # Windows
-venv\Scripts\activate
+.venv\Scripts\activate
 
 # Linux/Mac
-source venv/bin/activate
+source .venv/bin/activate
 ```
 
 ### 3. Установка зависимостей

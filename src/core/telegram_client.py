@@ -9,8 +9,7 @@ from telethon import TelegramClient, events
 from telethon.errors import (
     FloodWaitError, SessionPasswordNeededError, PhoneCodeInvalidError,
     PhoneNumberInvalidError, PeerFloodError, UserDeactivatedBanError,
-    ChatWriteForbiddenError, SlowModeWaitError, ConnectionError,
-    TimeoutError, AuthKeyUnregisteredError
+    ChatWriteForbiddenError, SlowModeWaitError, AuthKeyUnregisteredError
 )
 from telethon.tl.types import User, Chat, Channel
 from loguru import logger
@@ -222,7 +221,7 @@ class TelegramAIClient:
             
             await self._rate_limit()
             
-            # 1. ПРОЧИТЫВАЕМ сообщения (ИСПРАВЛЕНО: правильная работа с entity)
+            # 1. ПРОЧИТЫВАЕМ сообщения
             try:
                 # Отмечаем сообщения как прочитанные
                 await self.client.send_read_acknowledge(user_id)
@@ -235,7 +234,7 @@ class TelegramAIClient:
                 logger.debug(f"⚠️ Не удалось отметить как прочитанное: {e}")
                 # Продолжаем выполнение
             
-            # 2. ПОКАЗЫВАЕМ "печатает..." (ИСПРАВЛЕНО: правильная работа с action)
+            # 2. ПОКАЗЫВАЕМ "печатает..."
             typing_duration = min(len(text) * 0.1 + random.uniform(2.0, 5.0), 10.0)
             
             try:

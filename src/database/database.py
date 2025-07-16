@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy import create_engine, and_, desc
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from loguru import logger
 
 from ..config.settings import settings
@@ -302,6 +301,83 @@ class DatabaseManager:
                 Chat.is_active == True
             ).all()
             return chats
+    
+    def get_conversation_stats(self, chat_id: int) -> Dict[str, Any]:
+        """Получить статистику разговора"""
+        with self.get_session() as session:
+            # Общее количество сообщений
+            total_messages = session.query(Message).filter(
+                Message.chat_id == chat_id
+            ).count()
+            
+            # Сообщения от пользователя
+            user_messages = session.query(Message).filter(
+                and_(
+                    Message.chat_id == chat_id,
+                    Message.is_from_ai == False
+                )
+            ).count()
+            
+            # Сообщения от ИИ
+            ai_messages = session.query(Message).filter(
+                and_(
+                    Message.chat_id == chat_id,
+                    Message.is_from_ai == True
+                )
+            ).count()
+            
+            # Первое и последнее сообщение
+            first_message = session.query(Message).filter(
+                Message.chat_id == chat_id
+            ).order_by(Message.created_at.asc()).first()
+            
+            last_message = session.query(Message).filter(
+                Message.chat_id == chat_id
+            ).order_by(Message.created_at.desc()).first()
+            
+            # Длительность разговора
+            conversation_duration_seconds = 0
+            messages_per_day = 0
+            
+            if first_message and last_message:
+                duration = last_message.created_at - first_message.created_at
+                conversation_duration_seconds = duration.total_seconds()
+                
+                if conversation_duration_seconds > 0:
+                    days = max(1, conversation_duration_seconds / 86400)  # 86400 сек в дне
+                    messages_per_day = total_messages / days
+            
+            return {
+                'total_messages': total_messages,
+                'user_messages': user_messages,
+                'ai_messages': ai_messages,
+                'response_rate': ai_messages / user_messages if user_messages > 0 else 0,
+                'conversation_duration_seconds': conversation_duration_seconds,
+                'messages_per_day': messages_per_day
+            }
+    
+    def get_unanswered_chats(self, hours_threshold: int = 2) -> List[Chat]:
+        """Получить чаты с неотвеченными сообщениями"""
+        with self.get_session() as session:
+            cutoff_time = datetime.utcnow() - timedelta(hours=hours_threshold)
+            
+            # Ищем чаты где последнее сообщение от пользователя и нет ответа от ИИ
+            unanswered_chats = []
+            
+            active_chats = session.query(Chat).filter(Chat.is_active == True).all()
+            
+            for chat in active_chats:
+                # Получаем последнее сообщение
+                last_message = session.query(Message).filter(
+                    Message.chat_id == chat.id
+                ).order_by(Message.created_at.desc()).first()
+                
+                if (last_message and 
+                    not last_message.is_from_ai and 
+                    last_message.created_at < cutoff_time):
+                    unanswered_chats.append(chat)
+            
+            return unanswered_chats
     
     def update_chat_context(self, chat_id: int, **kwargs):
         """Обновить контекст чата"""

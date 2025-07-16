@@ -1,86 +1,223 @@
 """
-Продвинутые вспомогательные функции для улучшенного AI Companion
+Вспомогательные функции для Telegram AI Companion
 """
 import random
-import asyncio
+import re
+import os
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta
 from loguru import logger
 
 
-class ProxyManager:
-    """Менеджер прокси для ротации и проверки"""
+def setup_logging():
+    """Настройка логирования"""
+    from src.config.settings import settings
     
-    def __init__(self):
-        self.proxies: List[Dict[str, str]] = []
-        self.current_proxy_index = 0
-        self.failed_proxies: set = set()
-        
-    def add_proxy(self, proxy_type: str, host: str, port: int, 
-                  username: str = None, password: str = None):
-        """Добавить прокси в список"""
-        proxy = {
-            'type': proxy_type,  # 'http', 'socks5', etc.
-            'host': host,
-            'port': port,
-            'username': username,
-            'password': password,
-            'id': f"{host}:{port}"
-        }
-        self.proxies.append(proxy)
-        logger.info(f"Добавлен прокси: {proxy['id']}")
+    # Создаем директорию для логов
+    os.makedirs("logs", exist_ok=True)
     
-    def get_current_proxy(self) -> Optional[Dict[str, str]]:
-        """Получить текущий активный прокси"""
-        if not self.proxies:
-            return None
-        
-        # Пропускаем неработающие прокси
-        attempts = 0
-        while attempts < len(self.proxies):
-            proxy = self.proxies[self.current_proxy_index]
-            if proxy['id'] not in self.failed_proxies:
-                return proxy
-            
-            self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxies)
-            attempts += 1
-        
-        # Все прокси неработающие - очищаем список failed и начинаем заново
-        logger.warning("Все прокси помечены как неработающие, сброс списка")
-        self.failed_proxies.clear()
-        return self.proxies[self.current_proxy_index] if self.proxies else None
+    # Убираем старые обработчики
+    logger.remove()
     
-    def rotate_proxy(self) -> Optional[Dict[str, str]]:
-        """Переключиться на следующий прокси"""
-        if not self.proxies:
-            return None
-        
-        self.current_proxy_index = (self.current_proxy_index + 1) % len(self.proxies)
-        return self.get_current_proxy()
+    # Консольный вывод
+    logger.add(
+        sink=lambda msg: print(msg, end=""),
+        level=settings.log_level,
+        format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        colorize=True
+    )
     
-    def mark_proxy_failed(self, proxy_id: str):
-        """Отметить прокси как неработающий"""
-        self.failed_proxies.add(proxy_id)
-        logger.warning(f"Прокси {proxy_id} помечен как неработающий")
+    # Файловый вывод
+    logger.add(
+        sink=settings.log_file,
+        level=settings.log_level,
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+        rotation="10 MB",
+        retention="30 days",
+        compression="zip"
+    )
     
-    def get_telethon_proxy_config(self) -> Optional[Tuple]:
-        """Получить конфигурацию прокси для Telethon"""
-        proxy = self.get_current_proxy()
-        if not proxy:
-            return None
+    logger.info("Логирование настроено")
+
+
+def get_random_delay(min_seconds: int = 5, max_seconds: int = 30) -> int:
+    """Получить случайную задержку"""
+    return random.randint(min_seconds, max_seconds)
+
+
+def get_smart_delay(current_hour: int, emotion: str = 'neutral', relationship_stage: str = 'initial') -> int:
+    """Умная задержка в зависимости от времени и контекста"""
+    from src.config.settings import settings
+    
+    base_delay = settings.min_response_delay
+    max_delay = settings.max_response_delay
+    
+    # Корректировка по времени суток
+    if 0 <= current_hour < 7:      # Ночь
+        time_multiplier = 3.0
+    elif 7 <= current_hour < 9:    # Раннее утро
+        time_multiplier = 2.0
+    elif 9 <= current_hour < 18:   # Рабочий день
+        time_multiplier = 1.0
+    elif 18 <= current_hour < 22:  # Вечер
+        time_multiplier = 0.8
+    else:                          # Поздний вечер
+        time_multiplier = 1.5
+    
+    # Корректировка по эмоции
+    emotion_multipliers = {
+        'негативный': 0.5,   # Быстро отвечаем на негатив
+        'позитивный': 1.2,   # Чуть медленнее на позитив
+        'нейтральный': 1.0,  # Обычно
+        'любопытный': 0.7,   # Быстро на любопытство
+        'флиртующий': 0.6    # Быстро на флирт
+    }
+    
+    # Корректировка по стадии отношений
+    stage_multipliers = {
+        'initial': 2.0,      # В начале медленнее
+        'getting_acquainted': 1.5,   # Знакомимся
+        'personal': 1.0,     # Личные темы
+        'ready_to_meet': 0.8 # Готовы к встрече
+    }
+    
+    # Финальный расчет
+    delay = base_delay * time_multiplier
+    delay *= emotion_multipliers.get(emotion, 1.0)
+    delay *= stage_multipliers.get(relationship_stage, 1.0)
+    
+    # Добавляем случайность
+    randomness = random.uniform(0.8, 1.2)
+    delay *= randomness
+    
+    # Ограничиваем диапазон
+    delay = max(base_delay, min(int(delay), max_delay))
+    
+    return delay
+
+
+def clean_text(text: str) -> str:
+    """Очистка текста от лишних символов"""
+    if not text:
+        return ""
+    
+    # Убираем лишние пробелы
+    text = re.sub(r'\s+', ' ', text)
+    text = text.strip()
+    
+    # Убираем некорректные символы
+    text = re.sub(r'[^\w\s.,!?():-]', '', text)
+    
+    return text
+
+
+def extract_keywords(text: str) -> List[str]:
+    """Извлечение ключевых слов из текста"""
+    if not text:
+        return []
+    
+    text = text.lower()
+    
+    # Стоп-слова
+    stop_words = {'и', 'в', 'на', 'с', 'по', 'для', 'не', 'что', 'это', 'как', 'а', 'но', 'или'}
+    
+    # Извлекаем слова
+    words = re.findall(r'\b\w+\b', text)
+    keywords = [word for word in words if len(word) > 2 and word not in stop_words]
+    
+    return keywords
+
+
+def is_question(text: str) -> bool:
+    """Проверка, является ли текст вопросом"""
+    if not text:
+        return False
+    
+    # Явные признаки вопроса
+    if '?' in text:
+        return True
+    
+    # Вопросительные слова
+    question_words = ['как', 'что', 'где', 'когда', 'почему', 'зачем', 'кто', 'какой', 'какая', 'какие']
+    text_lower = text.lower()
+    
+    return any(word in text_lower for word in question_words)
+
+
+def get_time_based_greeting() -> str:
+    """Получить приветствие в зависимости от времени"""
+    current_hour = datetime.now().hour
+    
+    if 5 <= current_hour < 12:
+        return "Доброе утро"
+    elif 12 <= current_hour < 18:
+        return "Добрый день"
+    elif 18 <= current_hour < 23:
+        return "Добрый вечер"
+    else:
+        return "Доброй ночи"
+
+
+def add_random_typo(text: str) -> str:
+    """Добавление случайной опечатки для реалистичности"""
+    if len(text) < 10 or random.random() > 0.3:  # 30% шанс
+        return text
+    
+    words = text.split()
+    if len(words) < 2:
+        return text
+    
+    # Выбираем случайное слово для изменения
+    word_index = random.randint(0, len(words) - 1)
+    word = words[word_index]
+    
+    if len(word) < 3:
+        return text
+    
+    # Типы опечаток
+    typo_type = random.choice(['missing_letter', 'extra_letter', 'wrong_letter'])
+    
+    if typo_type == 'missing_letter' and len(word) > 3:
+        # Убираем букву
+        pos = random.randint(1, len(word) - 2)
+        new_word = word[:pos] + word[pos+1:]
+    elif typo_type == 'extra_letter':
+        # Добавляем букву
+        pos = random.randint(1, len(word) - 1)
+        letter = random.choice('абвгдежзийклмнопрстуфхцчшщэюя')
+        new_word = word[:pos] + letter + word[pos:]
+    else:
+        # Заменяем букву
+        pos = random.randint(1, len(word) - 2)
+        letter = random.choice('абвгдежзийклмнопрстуфхцчшщэюя')
+        new_word = word[:pos] + letter + word[pos+1:]
+    
+    words[word_index] = new_word
+    return ' '.join(words)
+
+
+def format_chat_history_for_ai(messages: List[Dict[str, Any]], limit: int = 10) -> str:
+    """Форматирование истории чата для ИИ"""
+    if not messages:
+        return "Начало диалога"
+    
+    # Берем последние сообщения
+    recent_messages = messages[-limit:]
+    
+    formatted_lines = []
+    for msg in recent_messages:
+        role = "ИИ" if msg.get('is_from_ai', False) else "Пользователь"
+        timestamp = msg.get('created_at', datetime.now()).strftime("%H:%M")
+        text = msg.get('text', '')
         
-        # Формат для Telethon: (type, host, port, username, password)
-        return (
-            proxy['type'],
-            proxy['host'], 
-            proxy['port'],
-            proxy.get('username'),
-            proxy.get('password')
-        )
+        if text:
+            formatted_lines.append(f"[{timestamp}] {role}: {text}")
+    
+    return "\n".join(formatted_lines)
 
 
 class MessagePatternAnalyzer:
-    """Анализатор паттернов сообщений пользователей"""
+    """Анализатор паттернов сообщений"""
     
     @staticmethod
     def detect_spam_pattern(messages: List[Dict], time_window: int = 60) -> bool:
@@ -116,7 +253,7 @@ class MessagePatternAnalyzer:
         last_time = last_message.get('created_at', datetime.utcnow())
         
         # Нет сообщений больше 6 часов
-        if (datetime.utcnow() - last_time).hours > 6:
+        if (datetime.utcnow() - last_time).seconds > 21600:  # 6 часов
             return True
         
         # Прощальные фразы
@@ -124,103 +261,6 @@ class MessagePatternAnalyzer:
         text = last_message.get('text', '').lower()
         
         return any(phrase in text for phrase in farewell_phrases)
-    
-    @staticmethod
-    def get_user_activity_pattern(messages: List[Dict]) -> Dict[str, Any]:
-        """Получить паттерн активности пользователя"""
-        if not messages:
-            return {'type': 'unknown', 'peak_hours': [], 'avg_response_time': 0}
-        
-        # Анализ времени активности
-        hours = [msg.get('created_at', datetime.utcnow()).hour for msg in messages]
-        hour_counts = {}
-        for hour in hours:
-            hour_counts[hour] = hour_counts.get(hour, 0) + 1
-        
-        # Пиковые часы (топ 3)
-        peak_hours = sorted(hour_counts.keys(), key=lambda h: hour_counts[h], reverse=True)[:3]
-        
-        # Тип активности
-        if max(hour_counts.values()) > len(messages) * 0.4:
-            activity_type = 'concentrated'  # Сконцентрированная активность
-        elif len(hour_counts) > 12:
-            activity_type = 'distributed'  # Распределенная активность
-        else:
-            activity_type = 'regular'  # Регулярная активность
-        
-        return {
-            'type': activity_type,
-            'peak_hours': peak_hours,
-            'total_messages': len(messages),
-            'unique_hours': len(hour_counts)
-        }
-
-
-class ResponseQualityAnalyzer:
-    """Анализатор качества ответов ИИ"""
-    
-    @staticmethod
-    def analyze_response_effectiveness(ai_message: str, user_response: str = None) -> Dict[str, Any]:
-        """Анализ эффективности ответа ИИ"""
-        analysis = {
-            'length_score': ResponseQualityAnalyzer._score_length(ai_message),
-            'question_score': ResponseQualityAnalyzer._score_questions(ai_message),
-            'engagement_score': 0,
-            'overall_score': 0
-        }
-        
-        # Анализ реакции пользователя (если есть)
-        if user_response:
-            analysis['engagement_score'] = ResponseQualityAnalyzer._score_engagement(
-                ai_message, user_response
-            )
-        
-        # Общий балл
-        scores = [analysis['length_score'], analysis['question_score'], analysis['engagement_score']]
-        analysis['overall_score'] = sum(scores) / len([s for s in scores if s > 0])
-        
-        return analysis
-    
-    @staticmethod
-    def _score_length(message: str) -> float:
-        """Оценка длины сообщения (1-5 предложений = хорошо)"""
-        sentences = message.count('.') + message.count('!') + message.count('?')
-        if 1 <= sentences <= 3:
-            return 1.0
-        elif sentences == 4:
-            return 0.8
-        elif sentences >= 5:
-            return 0.6
-        else:
-            return 0.4
-    
-    @staticmethod
-    def _score_questions(message: str) -> float:
-        """Оценка наличия вопросов"""
-        question_count = message.count('?')
-        if question_count == 1:
-            return 1.0
-        elif question_count == 2:
-            return 0.8
-        elif question_count >= 3:
-            return 0.6
-        else:
-            return 0.3
-    
-    @staticmethod
-    def _score_engagement(ai_message: str, user_response: str) -> float:
-        """Оценка вовлеченности на основе ответа пользователя"""
-        user_length = len(user_response.split())
-        
-        # Длинный ответ = хорошая вовлеченность
-        if user_length > 20:
-            return 1.0
-        elif user_length > 10:
-            return 0.8
-        elif user_length > 5:
-            return 0.6
-        else:
-            return 0.4
 
 
 class SmartDelayCalculator:
@@ -232,8 +272,7 @@ class SmartDelayCalculator:
         user_emotion: str, 
         relationship_stage: str,
         current_hour: int,
-        message_length: int,
-        conversation_context: Dict[str, Any] = None
+        message_length: int
     ) -> int:
         """Расчет оптимальной задержки ответа"""
         
@@ -275,7 +314,7 @@ class SmartDelayCalculator:
         else:                          # Поздний вечер
             time_multiplier = 1.5
         
-        # Корректировка по длине сообщения (симуляция времени чтения)
+        # Корректировка по длине сообщения
         length_addition = min(message_length * 0.1, 10)  # Максимум +10 секунд
         
         # Финальный расчет
@@ -295,40 +334,6 @@ class SmartDelayCalculator:
         return delay
 
 
-class ConversationFlowManager:
-    """Менеджер потока разговора"""
-    
-    def __init__(self):
-        self.conversation_stages = {
-            'greeting': ['привет', 'hello', 'добро', 'здравствуй'],
-            'question': ['?', 'что', 'как', 'где', 'когда', 'почему'],
-            'statement': ['я', 'мне', 'у меня', 'думаю', 'считаю'],
-            'farewell': ['пока', 'до свидания', 'увидимся', 'спокойной']
-        }
-    
-    def classify_message_intent(self, message: str) -> str:
-        """Классификация намерения сообщения"""
-        message_lower = message.lower()
-        
-        for intent, keywords in self.conversation_stages.items():
-            if any(keyword in message_lower for keyword in keywords):
-                return intent
-        
-        return 'general'
-    
-    def suggest_response_type(self, user_intent: str, conversation_history: List[str]) -> str:
-        """Предложение типа ответа в зависимости от намерения"""
-        suggestions = {
-            'greeting': 'reciprocal_greeting',
-            'question': 'answer_and_ask',
-            'statement': 'acknowledge_and_relate',
-            'farewell': 'polite_farewell',
-            'general': 'engaging_response'
-        }
-        
-        return suggestions.get(user_intent, 'engaging_response')
-
-
-# Глобальные экземпляры для использования в модулях
-proxy_manager = ProxyManager()
-conversation_flow_manager = ConversationFlowManager()
+# Глобальные экземпляры
+message_pattern_analyzer = MessagePatternAnalyzer()
+smart_delay_calculator = SmartDelayCalculator()

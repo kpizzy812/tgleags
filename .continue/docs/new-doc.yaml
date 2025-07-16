@@ -1,0 +1,6 @@
+name: Git-repo
+version: 0.0.1
+schema: v1
+docs:
+  - name: Git-repo
+    startUrl: https://github.com/kpizzy812/tgleags
