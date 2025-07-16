@@ -169,12 +169,11 @@ class MessageMonitor:
             
             logger.info(f"📬 Новый пакет в чате {chat_id}: {message_batch.get_context_summary()}")
             
-            # Проверяем, должны ли мы ответить
-            if not self.response_generator.should_respond(chat_id, message_batch):
-                logger.debug(f"Пропускаем ответ для чата {chat_id}")
-                # Обновляем ID последнего обработанного сообщения
-                self.last_processed_message_ids[chat_id] = message_batch.messages[-1].id
-                return
+            # Временно для тестирования - отвечаем на все сообщения
+            # if not self.response_generator.should_respond(chat_id, message_batch):
+            #     logger.debug(f"Пропускаем ответ для чата {chat_id}")
+            #     self.last_processed_message_ids[chat_id] = message_batch.messages[-1].id
+            #     return
             
             # Генерируем ответ на пакет сообщений
             response_text = await self.response_generator.generate_response_for_batch(

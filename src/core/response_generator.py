@@ -474,7 +474,12 @@ class ResponseGenerator:
             # Обновляем контекст
             update_data = {}
             if detected_interests:
-                existing_interests = json.loads(context.detected_interests) if context and context.detected_interests else []
+                existing_interests = []
+            if context and context.detected_interests:
+                try:
+                    existing_interests = json.loads(context.detected_interests)
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    existing_interests = []
                 all_interests = list(set(existing_interests + detected_interests))
                 update_data['detected_interests'] = json.dumps(all_interests)
             
@@ -498,8 +503,9 @@ class ResponseGenerator:
         time_since = (datetime.utcnow() - last_message.created_at).total_seconds()
         
         # Если прошло меньше 30 секунд - возможно она еще пишет
-        if time_since < 30:
-            return False
+        if time_since < 5:
+            logger.debug(f"Пропускаем ответ для чата {chat_id}: прошло только {time_since:.1f}с (нужно 30с)")
+            return False  
         
         return True
     
