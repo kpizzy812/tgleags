@@ -227,9 +227,20 @@ class ResponseGenerator:
         # Анализ контекста для персонализации
         context_info = ""
         if chat_context:
-            detected_interests = json.loads(chat_context.get('detected_interests', '[]'))
-            if detected_interests:
-                context_info = f"\nЧТО ЗНАЕШЬ О НЕЙ: {', '.join(detected_interests)}"
+            try:
+                detected_interests_raw = chat_context.get('detected_interests', '[]')
+                logger.debug(f"detected_interests_raw: {detected_interests_raw}, type: {type(detected_interests_raw)}")
+
+                if detected_interests_raw and detected_interests_raw not in [None, 'null', '']:
+                    detected_interests = json.loads(detected_interests_raw)
+                else:
+                    detected_interests = []
+        
+                if detected_interests:
+                    context_info = f"\nЧТО ЗНАЕШЬ О НЕЙ: {', '.join(detected_interests)}"
+            except (json.JSONDecodeError, TypeError, AttributeError) as e:
+                logger.error(f"Ошибка парсинга detected_interests: {e}")
+                detected_interests = []
         
         # Специальные инструкции на основе анализа
         special_instructions = self._get_response_strategy_realistic(analysis, day)
@@ -335,6 +346,9 @@ class ResponseGenerator:
             context_dict = {}
             
             if chat_context:
+                logger.debug(f"Chat context detected_interests: {chat_context.detected_interests}")
+                logger.debug(f"Chat context type: {type(chat_context.detected_interests)}")
+    
                 context_dict = {
                     'relationship_stage': chat_context.relationship_stage,
                     'messages_count': chat_context.messages_count,
@@ -345,9 +359,13 @@ class ResponseGenerator:
             day = self._get_relationship_stage_days(chat_context)
             
             # Строим реалистичный промпт
-            system_prompt, user_prompt = self._build_realistic_prompt(
-                context_dict, message_batch, analysis, day
-            )
+            try:
+                system_prompt, user_prompt = self._build_realistic_prompt(
+                    context_dict, message_batch, analysis, day
+                )
+            except Exception as e:
+                logger.error(f"Ошибка в _build_realistic_prompt: {e}")
+                raise
             
             # Обновляем контекст чата
             self._update_chat_context_from_batch(chat_id, message_batch, analysis)
@@ -475,11 +493,11 @@ class ResponseGenerator:
             update_data = {}
             if detected_interests:
                 existing_interests = []
-            if context and context.detected_interests:
-                try:
-                    existing_interests = json.loads(context.detected_interests)
-                except (json.JSONDecodeError, TypeError, AttributeError):
-                    existing_interests = []
+                if context and context.detected_interests:
+                    try:
+                        existing_interests = json.loads(context.detected_interests)
+                    except (json.JSONDecodeError, TypeError, AttributeError):
+                        existing_interests = []
                 all_interests = list(set(existing_interests + detected_interests))
                 update_data['detected_interests'] = json.dumps(all_interests)
             
