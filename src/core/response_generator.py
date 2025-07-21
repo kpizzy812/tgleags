@@ -296,7 +296,7 @@ class ResponseGenerator:
         # Получаем недавнюю историю диалога
         if message_batch.messages:
             chat_id = message_batch.messages[0].chat_id
-            chat_history = db_manager.get_recent_conversation_context(chat_id, limit=10)
+            chat_history = db_manager.get_recent_conversation_context(chat_id, limit=50)
         else:
             chat_history = "Начало диалога"
         
