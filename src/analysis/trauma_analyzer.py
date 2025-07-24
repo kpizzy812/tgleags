@@ -125,8 +125,16 @@ class TraumaAnalyzer:
                 temperature=0.4,
                 max_tokens=500
             )
-            
-            return json.loads(response.choices[0].message.content)
+
+            try:
+                content = response.choices[0].message.content.strip()
+                if not content:
+                    logger.warning(f"Пустой ответ от OpenAI для эмоционального анализа")
+                    return self._get_default_emotional_analysis()
+                return json.loads(content)
+            except json.JSONDecodeError as e:
+                logger.error(f"Ошибка парсинга JSON от OpenAI: {content[:100]}...")
+                return self._get_default_emotional_analysis()
             
         except Exception as e:
             logger.error(f"❌ Ошибка ИИ анализа эмоций: {e}")

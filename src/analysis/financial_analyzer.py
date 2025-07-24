@@ -138,8 +138,16 @@ class FinancialAnalyzer:
                 temperature=0.3,
                 max_tokens=400
             )
-            
-            return json.loads(response.choices[0].message.content)
+
+            try:
+                content = response.choices[0].message.content.strip()
+                if not content:
+                    logger.warning(f"Пустой ответ от OpenAI для финансового анализа")
+                    return self._get_default_financial_analysis()
+                return json.loads(content)
+            except json.JSONDecodeError as e:
+                logger.error(f"Ошибка парсинга JSON от OpenAI: {content[:100]}...")
+                return self._get_default_financial_analysis()
             
         except Exception as e:
             logger.error(f"❌ Ошибка ИИ анализа финансов: {e}")
@@ -154,7 +162,21 @@ class FinancialAnalyzer:
                 "readiness_indicators": [],
                 "red_flags": []
             }
-    
+
+    def _get_default_financial_analysis(self) -> Dict:
+        """Базовый финансовый анализ"""
+        return {
+            "financial_stress_level": 5,
+            "job_satisfaction": 5,
+            "openness_to_opportunities": 5,
+            "money_complaints_detected": [],
+            "expensive_dreams_mentioned": [],
+            "work_problems": [],
+            "potential_motivation": "Не определено",
+            "readiness_indicators": [],
+            "red_flags": []
+        }
+
     def _calculate_overall_score(self, complaint_scores: Dict, ai_analysis: Dict) -> int:
         """Расчет общего финансового скора (1-10)"""
         # Базовый скор из паттернов

@@ -43,8 +43,16 @@ class DialogueStageAnalyzer:
                 temperature=0.2,  # Низкая для точного анализа
                 max_tokens=300
             )
-            
-            result = json.loads(response.choices[0].message.content)
+
+            try:
+                content = response.choices[0].message.content.strip()
+                if not content:
+                    logger.warning(f"Пустой ответ от OpenAI для анализа этапа")
+                    return self._get_fallback_stage_analysis()
+                result = json.loads(content)
+            except json.JSONDecodeError as e:
+                logger.error(f"Ошибка парсинга JSON от OpenAI: {content[:100]}...")
+                return self._get_fallback_stage_analysis()
             
             # Добавляем метаданные
             result['analyzed_at'] = datetime.utcnow().isoformat()

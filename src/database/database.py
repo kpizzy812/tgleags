@@ -4,7 +4,7 @@
 import json
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
-from sqlalchemy import create_engine, and_, desc, func
+from sqlalchemy import create_engine, and_, desc, func, text
 from sqlalchemy.orm import sessionmaker, Session
 from loguru import logger
 
@@ -60,15 +60,58 @@ class DatabaseManager:
         )
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
         self._init_database()
-    
+
     def _init_database(self):
-        """Инициализация базы данных"""
+        """Инициализация базы данных с миграцией"""
         try:
             Base.metadata.create_all(bind=self.engine)
+
+            # Проверяем и добавляем недостающие столбцы
+            self._migrate_schema_if_needed()
+
             logger.info("База данных инициализирована")
         except Exception as e:
             logger.error(f"Ошибка инициализации БД: {e}")
             raise
+
+    def _migrate_schema_if_needed(self):
+        """Миграция схемы БД для добавления новых столбцов"""
+        try:
+            with self.get_session() as session:
+                # Проверяем наличие новых столбцов в chat_contexts
+                try:
+                    session.execute(text("SELECT financial_profile FROM chat_contexts LIMIT 1"))
+                except Exception:
+                    logger.info("Добавляем недостающие столбцы в chat_contexts...")
+
+                    # Список новых столбцов для добавления
+                    new_columns = [
+                        "ALTER TABLE chat_contexts ADD COLUMN financial_profile TEXT",
+                        "ALTER TABLE chat_contexts ADD COLUMN emotional_profile TEXT",
+                        "ALTER TABLE chat_contexts ADD COLUMN dialogue_stage_history TEXT"
+                    ]
+
+                    for sql in new_columns:
+                        try:
+                            session.execute(sql)
+                            session.commit()
+                        except Exception as e:
+                            # Столбец уже существует - это нормально
+                            session.rollback()
+                            continue
+
+                    logger.info("Миграция chat_contexts завершена")
+
+                # Проверяем таблицу dialogue_analytics
+                try:
+                    session.execute(text("SELECT prospect_score FROM dialogue_analytics LIMIT 1"))
+                except Exception:
+                    logger.info("Создаем таблицу dialogue_analytics...")
+                    # Будет создана автоматически через create_all
+
+        except Exception as e:
+            logger.warning(f"Предупреждение миграции БД: {e}")
+            logger.info("Для чистой установки удалите файл telegram_ai.db")
     
     def get_session(self) -> Session:
         """Получить сессию БД"""
