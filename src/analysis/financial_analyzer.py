@@ -100,37 +100,37 @@ class FinancialAnalyzer:
                 desires.append(category)
         
         return desires
-    
+
     def _get_ai_financial_analysis(self, history: str, new_messages: str) -> Dict:
         """ИИ анализ финансового состояния"""
         try:
             prompt = f"""Проанализируй финансовое состояние девушки по диалогу.
 
-ИСТОРИЯ ДИАЛОГА:
-{history}
+    ИСТОРИЯ ДИАЛОГА:
+    {history}
 
-НОВЫЕ СООБЩЕНИЯ:  
-{new_messages}
+    НОВЫЕ СООБЩЕНИЯ:  
+    {new_messages}
 
-ОТВЕТЬ JSON:
-{{
-    "financial_stress_level": 1-10,
-    "job_satisfaction": 1-10,
-    "openness_to_opportunities": 1-10,
-    "money_complaints_detected": ["конкретные жалобы"],
-    "expensive_dreams_mentioned": ["мечты о дорогих вещах"],
-    "work_problems": ["проблемы на работе"],
-    "potential_motivation": "что может мотивировать к подработке",
-    "readiness_indicators": ["индикаторы готовности"],
-    "red_flags": ["настораживающие моменты"]
-}}
+    ВЕРНИ ТОЛЬКО JSON БЕЗ ОБЕРТКИ:
+    {{
+        "financial_stress_level": 1-10,
+        "job_satisfaction": 1-10,
+        "openness_to_opportunities": 1-10,
+        "money_complaints_detected": ["конкретные жалобы"],
+        "expensive_dreams_mentioned": ["мечты о дорогих вещах"],
+        "work_problems": ["проблемы на работе"],
+        "potential_motivation": "что может мотивировать к подработке",
+        "readiness_indicators": ["индикаторы готовности"],
+        "red_flags": ["настораживающие моменты"]
+    }}
 
-Ищи:
-- Жалобы на зарплату, нехватку денег
-- Желания дорогих вещей (машины, путешествия, квартиры)
-- Недовольство работой или начальством
-- Мечты о лучшей жизни
-- Готовность к дополнительному заработку"""
+    Ищи:
+    - Жалобы на зарплату, нехватку денег
+    - Желания дорогих вещей (машины, путешествия, квартиры)
+    - Недовольство работой или начальством
+    - Мечты о лучшей жизни
+    - Готовность к дополнительному заработку"""
 
             response = self.openai_client.chat.completions.create(
                 model=settings.openai_model,
@@ -139,29 +139,41 @@ class FinancialAnalyzer:
                 max_tokens=400
             )
 
+            content = response.choices[0].message.content.strip()
+            if not content:
+                logger.warning(f"Пустой ответ от OpenAI для финансового анализа")
+                return self._get_default_financial_analysis()
+
+            # Очищаем от markdown оберток
+            content = self._clean_json_response(content)
+
+            if not content:
+                logger.warning(f"Не удалось очистить JSON ответ")
+                return self._get_default_financial_analysis()
+
             try:
-                content = response.choices[0].message.content.strip()
-                if not content:
-                    logger.warning(f"Пустой ответ от OpenAI для финансового анализа")
-                    return self._get_default_financial_analysis()
                 return json.loads(content)
             except json.JSONDecodeError as e:
                 logger.error(f"Ошибка парсинга JSON от OpenAI: {content[:100]}...")
                 return self._get_default_financial_analysis()
-            
+
         except Exception as e:
             logger.error(f"❌ Ошибка ИИ анализа финансов: {e}")
-            return {
-                "financial_stress_level": 5,
-                "job_satisfaction": 5,
-                "openness_to_opportunities": 5,
-                "money_complaints_detected": [],
-                "expensive_dreams_mentioned": [],
-                "work_problems": [],
-                "potential_motivation": "Не определено",
-                "readiness_indicators": [],
-                "red_flags": []
-            }
+            return self._get_default_financial_analysis()
+
+    def _clean_json_response(self, content: str) -> str:
+        """Очистка ответа OpenAI от markdown оберток"""
+        # Убираем markdown обертки
+        content = content.replace('```json', '').replace('```', '')
+
+        # Убираем лишние пробелы и переносы
+        content = content.strip()
+
+        # Если это не JSON, возвращаем пустую строку
+        if not content.startswith('{'):
+            return ""
+
+        return content
 
     def _get_default_financial_analysis(self) -> Dict:
         """Базовый финансовый анализ"""

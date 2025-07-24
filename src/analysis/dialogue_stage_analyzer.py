@@ -24,19 +24,58 @@ class DialogueStageAnalyzer:
             "diagnosis": "Выявление финансовых потребностей и проблем",
             "proposal": "Предложение работы/помощи"
         }
-    
+
+    def _build_stage_analysis_prompt(self, history: str, new_messages: str) -> str:
+        """Строим промпт для анализа этапа"""
+        return f"""Проанализируй диалог знакомства и определи этап.
+
+    ЦЕЛЬ СТАСА: Через эмоциональную связь выявить финансовые проблемы девушки и предложить работу в криптотрейдинге.
+
+    ИСТОРИЯ ДИАЛОГА:
+    {history}
+
+    НОВЫЕ СООБЩЕНИЯ:
+    {new_messages}
+
+    ЭТАПЫ ДИАЛОГА:
+    1. ИНИЦИАЦИЯ (день 1-2): Знакомство, узнать работу, проверить реакцию на крипто
+    2. УДЕРЖАНИЕ (день 2-3): Углубление общения, поиск общих тем  
+    3. ДИАГНОСТИКА (день 3-5): Выявление финансовых жалоб, травм, дорогих желаний
+    4. ПРЕДЛОЖЕНИЕ (день 5-7): Предложение помощи/работы в криптотрейдинге
+
+    ВЕРНИ ТОЛЬКО JSON БЕЗ ОБЕРТКИ:
+    {{
+        "current_stage": "initiation/retention/diagnosis/proposal",
+        "dialogue_day": 1-7,
+        "stage_progress": 1-10,
+        "crypto_reaction": "positive/negative/neutral/unknown",
+        "financial_signals_count": 0-10,
+        "emotional_openness": 1-10,
+        "readiness_for_next_stage": true/false,
+        "key_insights": ["инсайт1", "инсайт2"],
+        "recommended_strategy": "конкретная рекомендация",
+        "stage_completion_percentage": 0-100
+    }}
+
+    Учитывай:
+    - Количество дней общения
+    - Реакцию на упоминания криптотрейдинга
+    - Жалобы на деньги/работу ("мало платят", "денег не хватает")
+    - Дорогие желания ("хочу машину", "мечтаю путешествовать")
+    - Эмоциональную открытость и доверие"""
+
     def analyze_current_stage(self, chat_id: int, message_batch: MessageBatch) -> Dict:
         """Определить текущий этап диалога и стратегию"""
         try:
             # Получаем контекст диалога
             conversation_history = db_manager.get_recent_conversation_context(chat_id, limit=100)
-            
+
             # Анализируем через ИИ
             analysis_prompt = self._build_stage_analysis_prompt(
-                conversation_history, 
+                conversation_history,
                 message_batch.total_text
             )
-            
+
             response = self.openai_client.chat.completions.create(
                 model=settings.openai_model,
                 messages=[{"role": "user", "content": analysis_prompt}],
@@ -44,68 +83,47 @@ class DialogueStageAnalyzer:
                 max_tokens=300
             )
 
+            content = response.choices[0].message.content.strip()
+            if not content:
+                logger.warning(f"Пустой ответ от OpenAI для анализа этапа")
+                return self._get_fallback_stage_analysis()
+
+            # Очищаем от markdown оберток
+            content = self._clean_json_response(content)
+
             try:
-                content = response.choices[0].message.content.strip()
-                if not content:
-                    logger.warning(f"Пустой ответ от OpenAI для анализа этапа")
-                    return self._get_fallback_stage_analysis()
                 result = json.loads(content)
             except json.JSONDecodeError as e:
                 logger.error(f"Ошибка парсинга JSON от OpenAI: {content[:100]}...")
                 return self._get_fallback_stage_analysis()
-            
+
             # Добавляем метаданные
             result['analyzed_at'] = datetime.utcnow().isoformat()
             result['chat_id'] = chat_id
             result['message_count'] = len(message_batch.messages)
-            
+
             logger.info(f"📊 Этап диалога {chat_id}: {result.get('current_stage')} "
-                       f"(день {result.get('dialogue_day', 1)})")
-            
+                        f"(день {result.get('dialogue_day', 1)})")
+
             return result
-            
+
         except Exception as e:
             logger.error(f"❌ Ошибка анализа этапа диалога: {e}")
             return self._get_fallback_stage_analysis()
-    
-    def _build_stage_analysis_prompt(self, history: str, new_messages: str) -> str:
-        """Строим промпт для анализа этапа"""
-        return f"""Проанализируй диалог знакомства и определи этап.
 
-ЦЕЛЬ СТАСА: Через эмоциональную связь выявить финансовые проблемы девушки и предложить работу в криптотрейдинге.
+    def _clean_json_response(self, content: str) -> str:
+        """Очистка ответа OpenAI от markdown оберток"""
+        # Убираем markdown обертки
+        content = content.replace('```json', '').replace('```', '')
 
-ИСТОРИЯ ДИАЛОГА:
-{history}
+        # Убираем лишние пробелы и переносы
+        content = content.strip()
 
-НОВЫЕ СООБЩЕНИЯ:
-{new_messages}
+        # Если это не JSON, возвращаем пустую строку
+        if not content.startswith('{'):
+            return ""
 
-ЭТАПЫ ДИАЛОГА:
-1. ИНИЦИАЦИЯ (день 1-2): Знакомство, узнать работу, проверить реакцию на крипто
-2. УДЕРЖАНИЕ (день 2-3): Углубление общения, поиск общих тем  
-3. ДИАГНОСТИКА (день 3-5): Выявление финансовых жалоб, травм, дорогих желаний
-4. ПРЕДЛОЖЕНИЕ (день 5-7): Предложение помощи/работы в криптотрейдинге
-
-ОТВЕТЬ СТРОГО JSON:
-{{
-    "current_stage": "initiation/retention/diagnosis/proposal",
-    "dialogue_day": 1-7,
-    "stage_progress": 1-10,
-    "crypto_reaction": "positive/negative/neutral/unknown",
-    "financial_signals_count": 0-10,
-    "emotional_openness": 1-10,
-    "readiness_for_next_stage": true/false,
-    "key_insights": ["инсайт1", "инсайт2"],
-    "recommended_strategy": "конкретная рекомендация",
-    "stage_completion_percentage": 0-100
-}}
-
-Учитывай:
-- Количество дней общения
-- Реакцию на упоминания криптотрейдинга
-- Жалобы на деньги/работу ("мало платят", "денег не хватает")
-- Дорогие желания ("хочу машину", "мечтаю путешествовать")
-- Эмоциональную открытость и доверие"""
+        return content
 
     def _get_fallback_stage_analysis(self) -> Dict:
         """Базовый анализ при ошибке"""

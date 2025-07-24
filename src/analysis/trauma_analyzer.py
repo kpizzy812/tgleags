@@ -84,40 +84,40 @@ class TraumaAnalyzer:
         except Exception as e:
             logger.error(f"❌ Ошибка анализа травм: {e}")
             return self._get_fallback_emotional_analysis()
-    
+
     def _get_ai_emotional_analysis(self, history: str, new_messages: str) -> Dict:
         """ИИ анализ эмоционального состояния"""
         try:
             prompt = f"""Проанализируй эмоциональное состояние девушки и уровень доверия в диалоге.
 
-ИСТОРИЯ ДИАЛОГА:
-{history}
+    ИСТОРИЯ ДИАЛОГА:
+    {history}
 
-НОВЫЕ СООБЩЕНИЯ:
-{new_messages}
+    НОВЫЕ СООБЩЕНИЯ:
+    {new_messages}
 
-ОТВЕТЬ JSON:
-{{
-    "emotional_openness": 1-10,
-    "trust_level": 1-10,
-    "vulnerability_shown": 1-10,
-    "traumas_shared": ["описание травм если есть"],
-    "emotional_triggers": ["темы которые её задевают"],
-    "support_needed": true/false,
-    "reciprocity_readiness": 1-10,
-    "intimacy_level": 1-10,
-    "emotional_state": "радость/грусть/злость/нейтрально/смешанно",
-    "personal_details_shared": ["личные детали которые рассказала"],
-    "family_situation": "что известно о семье",
-    "relationship_history": "что известно об отношениях"
-}}
+    ВЕРНИ ТОЛЬКО JSON БЕЗ ОБЕРТКИ:
+    {{
+        "emotional_openness": 1-10,
+        "trust_level": 1-10,
+        "vulnerability_shown": 1-10,
+        "traumas_shared": ["описание травм если есть"],
+        "emotional_triggers": ["темы которые её задевают"],
+        "support_needed": true/false,
+        "reciprocity_readiness": 1-10,
+        "intimacy_level": 1-10,
+        "emotional_state": "радость/грусть/злость/нейтрально/смешанно",
+        "personal_details_shared": ["личные детали которые рассказала"],
+        "family_situation": "что известно о семье",
+        "relationship_history": "что известно об отношениях"
+    }}
 
-Ищи признаки:
-- Рассказы о травмах, потерях, боли
-- Семейные проблемы, проблемы в отношениях
-- Готовность делиться личным
-- Потребность в поддержке и понимании
-- Взаимность в раскрытии"""
+    Ищи признаки:
+    - Рассказы о травмах, потерях, боли
+    - Семейные проблемы, проблемы в отношениях
+    - Готовность делиться личным
+    - Потребность в поддержке и понимании
+    - Взаимность в раскрытии"""
 
             response = self.openai_client.chat.completions.create(
                 model=settings.openai_model,
@@ -126,19 +126,41 @@ class TraumaAnalyzer:
                 max_tokens=500
             )
 
+            content = response.choices[0].message.content.strip()
+            if not content:
+                logger.warning(f"Пустой ответ от OpenAI для эмоционального анализа")
+                return self._get_default_emotional_analysis()
+
+            # Очищаем от markdown оберток
+            content = self._clean_json_response(content)
+
+            if not content:
+                logger.warning(f"Не удалось очистить JSON ответ")
+                return self._get_default_emotional_analysis()
+
             try:
-                content = response.choices[0].message.content.strip()
-                if not content:
-                    logger.warning(f"Пустой ответ от OpenAI для эмоционального анализа")
-                    return self._get_default_emotional_analysis()
                 return json.loads(content)
             except json.JSONDecodeError as e:
                 logger.error(f"Ошибка парсинга JSON от OpenAI: {content[:100]}...")
                 return self._get_default_emotional_analysis()
-            
+
         except Exception as e:
             logger.error(f"❌ Ошибка ИИ анализа эмоций: {e}")
             return self._get_default_emotional_analysis()
+
+    def _clean_json_response(self, content: str) -> str:
+        """Очистка ответа OpenAI от markdown оберток"""
+        # Убираем markdown обертки
+        content = content.replace('```json', '').replace('```', '')
+
+        # Убираем лишние пробелы и переносы
+        content = content.strip()
+
+        # Если это не JSON, возвращаем пустую строку
+        if not content.startswith('{'):
+            return ""
+
+        return content
     
     def _analyze_story_sharing_opportunity(self, emotional_analysis: Dict, new_messages: str) -> Dict:
         """Определить возможность поделиться историей Стаса"""
