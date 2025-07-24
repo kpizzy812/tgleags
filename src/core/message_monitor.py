@@ -8,6 +8,7 @@ from loguru import logger
 
 from ..config.settings import settings
 from ..database.database import db_manager, MessageBatch
+from ..database.models import Chat
 from ..utils.helpers import get_random_delay, get_smart_delay
 from .telegram_client import TelegramAIClient
 from .response_generator import ResponseGenerator
@@ -149,73 +150,100 @@ class MessageMonitor:
             
         except Exception as e:
             logger.error(f"Ошибка проверки новых сообщений: {e}")
-    
+
     async def _process_chat_smart(self, chat):
-        """Умная обработка отдельного чата с группировкой сообщений"""
+        """Умная обработка отдельного чата с новой архитектурой анализа"""
         try:
             chat_id = chat.id
             last_processed_id = self.last_processed_message_ids.get(chat_id, 0)
-            
+
             # Получаем пакет необработанных сообщений
             message_batch = db_manager.get_unprocessed_user_messages(
                 chat_id=chat_id,
                 last_processed_id=last_processed_id,
                 time_window_seconds=self.message_grouping_window
             )
-            
+
             # Если нет новых сообщений - пропускаем
             if not message_batch.messages:
                 return
-            
+
             logger.info(f"📬 Новый пакет в чате {chat_id}: {message_batch.get_context_summary()}")
-            
-            # Временно для тестирования - отвечаем на все сообщения
-            # if not self.response_generator.should_respond(chat_id, message_batch):
-            #     logger.debug(f"Пропускаем ответ для чата {chat_id}")
-            #     self.last_processed_message_ids[chat_id] = message_batch.messages[-1].id
-            #     return
-            
-            # Генерируем ответ на пакет сообщений
+
+            # НОВАЯ ЛОГИКА: Используем улучшенный ResponseGenerator
             response_text = await self.response_generator.generate_response_for_batch(
-                chat_id, 
+                chat_id,
                 message_batch
             )
-            
+
             if not response_text:
                 logger.warning(f"Не удалось сгенерировать ответ для чата {chat_id}")
                 return
-            
-            # Анализируем контекст для умной задержки
+
+            # Проверяем не является ли это сигналом завершения диалога
+            if self._is_dialogue_termination_signal(response_text):
+                logger.warning(f"🚨 Сигнал завершения диалога в чате {chat_id}: {response_text}")
+                self._handle_dialogue_termination(chat_id, "crypto_negative_reaction")
+                # Всё равно отправляем последнее сообщение
+
+            # Определяем задержку на основе анализа (упрощенно)
             context = db_manager.get_chat_context(chat_id)
             current_hour = datetime.now().hour
-            
-            # Определяем эмоцию из пакета для умной задержки
-            emotion = self._detect_batch_emotion(message_batch)
-            relationship_stage = context.relationship_stage if context else 'initial'
-            
-            # Умная задержка в зависимости от контекста
-            delay = get_smart_delay(current_hour, emotion, relationship_stage)
-            
+
+            # Базовая задержка для реалистичности
+            delay = get_smart_delay(current_hour, 'нейтральный',
+                                    context.relationship_stage if context else 'initial')
+
             # Добавляем в очередь ответов
             send_time = datetime.utcnow() + timedelta(seconds=delay)
-            
+
             self.response_queue.append({
                 'chat_id': chat_id,
                 'telegram_user_id': chat.telegram_user_id,
                 'message_text': response_text,
                 'send_time': send_time,
                 'message_batch': message_batch,
-                'delay_reason': f"smart_delay({emotion}, {relationship_stage}, {current_hour}h)"
+                'delay_reason': f"smart_delay(реалистичность, {current_hour}h)"
             })
-            
+
             # Обновляем ID последнего обработанного сообщения
             self.last_processed_message_ids[chat_id] = message_batch.messages[-1].id
             self.stats['processed_message_batches'] += 1
-            
-            logger.info(f"📅 Ответ запланирован для чата {chat_id} через {delay}с ({emotion}, {relationship_stage})")
-            
+
+            logger.info(f"📅 Ответ запланирован для чата {chat_id} через {delay}с")
+
         except Exception as e:
             logger.error(f"Ошибка умной обработки чата {chat.id}: {e}")
+
+    def _is_dialogue_termination_signal(self, response_text: str) -> bool:
+        """Проверка является ли ответ сигналом завершения диалога"""
+        termination_phrases = [
+            "каждому своё",
+            "удачи тебе",
+            "понятно, не твоё",
+            "всего хорошего"
+        ]
+
+        response_lower = response_text.lower()
+        return any(phrase in response_lower for phrase in termination_phrases)
+
+    def _handle_dialogue_termination(self, chat_id: int, reason: str):
+        """Обработка завершения диалога"""
+        try:
+            # Обновляем аналитику диалога
+            db_manager.update_dialogue_outcome(chat_id, "failure", reason)
+
+            # Деактивируем чат
+            with db_manager.get_session() as session:
+                chat = session.query(Chat).filter(Chat.id == chat_id).first()
+                if chat:
+                    chat.is_active = False
+                    session.commit()
+
+            logger.warning(f"🔚 Диалог {chat_id} завершен по причине: {reason}")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка завершения диалога: {e}")
     
     def _detect_batch_emotion(self, message_batch: MessageBatch) -> str:
         """Быстрое определение эмоции из пакета сообщений"""
@@ -375,3 +403,19 @@ class MessageMonitor:
             })
         
         return queue_info
+
+    def get_analytics_status(self) -> Dict[str, Any]:
+        """Получить статус аналитики диалогов"""
+        try:
+            analytics_summary = db_manager.get_analytics_summary()
+
+            return {
+                "total_active_chats": len(db_manager.get_active_chats()),
+                "analytics_summary": analytics_summary,
+                "current_queue_size": len(self.response_queue),
+                "processing_stats": self.stats.copy()
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения статуса аналитики: {e}")
+            return {}

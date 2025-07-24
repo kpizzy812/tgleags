@@ -1,15 +1,15 @@
 """
-Работа с базой данных (Улучшенная версия)
+Работа с базой данных
 """
 import json
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
-from sqlalchemy import create_engine, and_, desc
+from sqlalchemy import create_engine, and_, desc, func
 from sqlalchemy.orm import sessionmaker, Session
 from loguru import logger
 
 from ..config.settings import settings
-from .models import Base, Chat, Message, ChatContext
+from .models import Base, Chat, Message, ChatContext, DialogueAnalytics, PersonFact
 
 
 class MessageBatch:
@@ -400,6 +400,306 @@ class DatabaseManager:
                 ChatContext.chat_id == chat_id
             ).first()
             return context
+
+    def save_dialogue_analysis(self, chat_id: int, analysis_data: Dict) -> bool:
+        """Сохранение результатов анализа диалога"""
+        try:
+            with self.get_session() as session:
+                # Получаем или создаем запись аналитики
+                analytics = session.query(DialogueAnalytics).filter(
+                    DialogueAnalytics.chat_id == chat_id
+                ).first()
+
+                if not analytics:
+                    analytics = DialogueAnalytics(chat_id=chat_id)
+                    session.add(analytics)
+
+                # Обновляем данные из анализа
+                stage_analysis = analysis_data.get("stage_analysis", {})
+                financial_analysis = analysis_data.get("financial_analysis", {})
+                emotional_analysis = analysis_data.get("emotional_analysis", {})
+                overall_metrics = analysis_data.get("overall_metrics", {})
+
+                # Этапы диалога
+                analytics.current_stage = stage_analysis.get("current_stage", "initiation")
+                analytics.dialogue_duration_days = stage_analysis.get("dialogue_day", 1)
+
+                # Финансовые метрики
+                analytics.financial_score = financial_analysis.get("overall_score", 0)
+                analytics.financial_readiness = financial_analysis.get("readiness_level", "отсутствует")
+
+                # Сохраняем дорогие желания как JSON
+                expensive_desires = financial_analysis.get("expensive_desires", [])
+                analytics.expensive_desires = json.dumps(expensive_desires) if expensive_desires else None
+
+                # Подсчитываем жалобы на деньги - ИСПРАВЛЕНО
+                complaint_scores = financial_analysis.get("complaint_scores", {})
+                analytics.money_complaints_count = sum(complaint_scores.values()) if complaint_scores else 0
+
+                # Эмоциональные метрики
+                analytics.trust_level = emotional_analysis.get("trust_level", 0)
+                analytics.emotional_connection = emotional_analysis.get("emotional_connection", 0)
+
+                # Сохраняем травмы как JSON - ИСПРАВЛЕНО
+                traumas = emotional_analysis.get("emotional_analysis", {}).get("traumas_shared", [])
+                analytics.traumas_shared = json.dumps(traumas) if traumas else None
+
+                # Общие метрики
+                analytics.prospect_score = overall_metrics.get("overall_prospect_score", 0)
+
+                # Подсчитываем общее количество сообщений - ДОБАВЛЕНО
+                total_messages = session.query(Message).filter(Message.chat_id == chat_id).count()
+                analytics.total_messages = total_messages
+
+                analytics.updated_at = datetime.utcnow()
+
+                session.commit()
+                return True
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения анализа диалога: {e}")
+            return False
+
+    def get_chat_by_id(self, chat_id: int) -> Optional[Chat]:
+        """Получить чат по ID"""
+        try:
+            with self.get_session() as session:
+                chat = session.query(Chat).filter(Chat.id == chat_id).first()
+                return chat
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения чата {chat_id}: {e}")
+            return None
+
+    def get_high_prospect_chats(self, min_score: int = 70, limit: int = 10) -> List[DialogueAnalytics]:
+        """Получить чаты с высоким скором перспективности"""
+        try:
+            with self.get_session() as session:
+                prospects = session.query(DialogueAnalytics).join(Chat).filter(
+                    and_(
+                        DialogueAnalytics.prospect_score >= min_score,
+                        Chat.is_active == True,
+                        DialogueAnalytics.dialogue_outcome.is_(None)  # Только активные диалоги
+                    )
+                ).order_by(DialogueAnalytics.prospect_score.desc()).limit(limit).all()
+
+                return prospects
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения перспективных чатов: {e}")
+            return []
+
+    def mark_dialogue_success(self, chat_id: int, work_offer_accepted: bool = True):
+        """Отметить диалог как успешный"""
+        try:
+            with self.get_session() as session:
+                analytics = session.query(DialogueAnalytics).filter(
+                    DialogueAnalytics.chat_id == chat_id
+                ).first()
+
+                if analytics:
+                    analytics.dialogue_outcome = "success"
+                    analytics.work_offer_made = True
+                    analytics.work_offer_accepted = work_offer_accepted
+                    analytics.updated_at = datetime.utcnow()
+                    session.commit()
+
+                    logger.info(f"✅ Диалог {chat_id} отмечен как успешный")
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка отметки успеха диалога: {e}")
+
+    def cleanup_old_analytics(self, days_to_keep: int = 90) -> int:
+        """Очистка старой аналитики"""
+        try:
+            with self.get_session() as session:
+                cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
+
+                # Удаляем только завершенные диалоги старше указанного срока
+                deleted_count = session.query(DialogueAnalytics).filter(
+                    and_(
+                        DialogueAnalytics.created_at < cutoff_date,
+                        DialogueAnalytics.dialogue_outcome.isnot(None)
+                    )
+                ).delete()
+
+                session.commit()
+                logger.info(f"Удалено {deleted_count} записей старой аналитики")
+                return deleted_count
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка очистки аналитики: {e}")
+            return 0
+
+    def save_person_fact(self, chat_id: int, fact_type: str, fact_value: str, 
+                        confidence: float = 0.8, source_message_id: int = None) -> bool:
+        """Сохранение факта о собеседнице"""
+        try:
+            with self.get_session() as session:
+                # Проверяем есть ли уже такой факт
+                existing_fact = session.query(PersonFact).filter(
+                    and_(
+                        PersonFact.chat_id == chat_id,
+                        PersonFact.fact_type == fact_type,
+                        PersonFact.fact_value == fact_value
+                    )
+                ).first()
+                
+                if existing_fact:
+                    # Обновляем существующий факт
+                    existing_fact.last_confirmed = datetime.utcnow()
+                    existing_fact.confidence = max(existing_fact.confidence, confidence)
+                    existing_fact.times_referenced += 1
+                else:
+                    # Создаем новый факт
+                    fact = PersonFact(
+                        chat_id=chat_id,
+                        fact_type=fact_type,
+                        fact_value=fact_value,
+                        confidence=confidence,
+                        source_message_id=source_message_id
+                    )
+                    session.add(fact)
+                
+                session.commit()
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения факта: {e}")
+            return False
+
+    def get_person_facts(self, chat_id: int, fact_type: str = None) -> List[PersonFact]:
+        """Получение фактов о собеседнице"""
+        try:
+            with self.get_session() as session:
+                query = session.query(PersonFact).filter(PersonFact.chat_id == chat_id)
+                
+                if fact_type:
+                    query = query.filter(PersonFact.fact_type == fact_type)
+                
+                facts = query.order_by(PersonFact.confidence.desc()).all()
+                return facts
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения фактов: {e}")
+            return []
+
+    def get_dialogue_analytics(self, chat_id: int) -> Optional[DialogueAnalytics]:
+        """Получение аналитики диалога"""
+        try:
+            with self.get_session() as session:
+                analytics = session.query(DialogueAnalytics).filter(
+                    DialogueAnalytics.chat_id == chat_id
+                ).first()
+                return analytics
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения аналитики: {e}")
+            return None
+
+    def update_dialogue_outcome(self, chat_id: int, outcome: str, failure_reason: str = None):
+        """Обновление результата диалога"""
+        try:
+            with self.get_session() as session:
+                analytics = session.query(DialogueAnalytics).filter(
+                    DialogueAnalytics.chat_id == chat_id
+                ).first()
+                
+                if analytics:
+                    analytics.dialogue_outcome = outcome
+                    if failure_reason:
+                        analytics.failure_reason = failure_reason
+                    analytics.updated_at = datetime.utcnow()
+                    session.commit()
+                    
+        except Exception as e:
+            logger.error(f"❌ Ошибка обновления результата диалога: {e}")
+
+    def get_conversation_context_with_facts(self, chat_id: int, limit: int = 50) -> str:
+        """Улучшенный контекст диалога с фактами о собеседнице"""
+        try:
+            # Получаем базовый контекст
+            base_context = self.get_recent_conversation_context(chat_id, limit)
+            
+            # Получаем ключевые факты
+            facts = self.get_person_facts(chat_id)
+            
+            if not facts:
+                return base_context
+            
+            # Добавляем информацию о собеседнице
+            facts_summary = "\n--- ИЗВЕСТНЫЕ ФАКТЫ О НЕЙ ---\n"
+            
+            fact_groups = {}
+            for fact in facts[:10]:  # Топ 10 фактов
+                if fact.fact_type not in fact_groups:
+                    fact_groups[fact.fact_type] = []
+                fact_groups[fact.fact_type].append(fact.fact_value)
+            
+            for fact_type, values in fact_groups.items():
+                facts_summary += f"• {fact_type}: {', '.join(values)}\n"
+            
+            return f"{base_context}\n{facts_summary}"
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения контекста с фактами: {e}")
+            return self.get_recent_conversation_context(chat_id, limit)
+
+    def get_analytics_summary(self) -> Dict:
+        """Получение общей аналитики по всем диалогам"""
+        try:
+            with self.get_session() as session:
+                # Общие метрики
+                total_chats = session.query(DialogueAnalytics).count()
+
+                if total_chats == 0:
+                    return {
+                        "total_chats": 0,
+                        "stage_distribution": {},
+                        "outcome_distribution": {},
+                        "average_prospect_score": 0,
+                        "average_trust_level": 0
+                    }
+
+                # По этапам - ИСПРАВЛЕННАЯ ВЕРСИЯ
+                stage_stats = session.query(
+                    DialogueAnalytics.current_stage,
+                    func.count(DialogueAnalytics.id).label('count')
+                ).group_by(DialogueAnalytics.current_stage).all()
+
+                # По результатам - ИСПРАВЛЕННАЯ ВЕРСИЯ
+                outcome_stats = session.query(
+                    DialogueAnalytics.dialogue_outcome,
+                    func.count(DialogueAnalytics.id).label('count')
+                ).filter(DialogueAnalytics.dialogue_outcome.isnot(None)).group_by(
+                    DialogueAnalytics.dialogue_outcome
+                ).all()
+
+                # Средние скоры - ИСПРАВЛЕННАЯ ВЕРСИЯ
+                avg_prospect_score = session.query(
+                    func.avg(DialogueAnalytics.prospect_score)
+                ).scalar() or 0
+
+                avg_trust_level = session.query(
+                    func.avg(DialogueAnalytics.trust_level)
+                ).scalar() or 0
+
+                return {
+                    "total_chats": total_chats,
+                    "stage_distribution": {stage: count for stage, count in stage_stats},
+                    "outcome_distribution": {outcome: count for outcome, count in outcome_stats},
+                    "average_prospect_score": round(float(avg_prospect_score), 1),
+                    "average_trust_level": round(float(avg_trust_level), 1)
+                }
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения аналитики: {e}")
+            return {
+                "total_chats": 0,
+                "stage_distribution": {},
+                "outcome_distribution": {},
+                "average_prospect_score": 0,
+                "average_trust_level": 0
+            }
 
 
 # Глобальный экземпляр менеджера БД

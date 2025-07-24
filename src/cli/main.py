@@ -18,6 +18,11 @@ from src.core.message_monitor import MessageMonitor
 from src.database.database import db_manager
 from src.utils.helpers import setup_logging
 
+import json
+from src.database.models import Chat, DialogueAnalytics, PersonFact
+from sqlalchemy.orm import Session
+from sqlalchemy import and_
+
 
 class TelegramAIApp:
     """Основное приложение"""
@@ -385,6 +390,284 @@ def cleanup(days: int):
     else:
         click.echo("📭 Нет сообщений для удаления")
 
+
+@cli.command()
+@click.option('--chat-id', '-c', type=int, help='ID чата для анализа')
+def analyze(chat_id: int):
+    """Показать детальный анализ диалога"""
+    if not chat_id:
+        click.echo("❌ Необходимо указать chat_id: -c CHAT_ID")
+        return
+
+    try:
+        # Получаем аналитику диалога
+        analytics = db_manager.get_dialogue_analytics(chat_id)
+
+        if not analytics:
+            click.echo(f"📭 Нет аналитики для чата {chat_id}")
+            return
+
+        click.echo(f"\n🔍 Детальный анализ диалога {chat_id}:")
+        click.echo("-" * 60)
+
+        # Основные метрики
+        click.echo(f"📊 Общий скор перспективности: {analytics.prospect_score}/100")
+        click.echo(f"📈 Текущий этап: {analytics.current_stage}")
+        click.echo(f"📅 Дней общения: {analytics.dialogue_duration_days}")
+        click.echo(f"💬 Всего сообщений: {analytics.total_messages}")
+
+        # Финансовые метрики
+        click.echo(f"\n💰 Финансовый анализ:")
+        click.echo(f"   Финансовый скор: {analytics.financial_score}/10")
+        click.echo(f"   Готовность: {analytics.financial_readiness}")
+        click.echo(f"   Жалобы на деньги: {analytics.money_complaints_count}")
+
+        if analytics.expensive_desires:
+            try:
+                desires = json.loads(analytics.expensive_desires)
+                click.echo(f"   Дорогие желания: {', '.join(desires)}")
+            except:
+                pass
+
+        # Эмоциональные метрики
+        click.echo(f"\n💝 Эмоциональный анализ:")
+        click.echo(f"   Уровень доверия: {analytics.trust_level}/10")
+        click.echo(f"   Эмоциональная связь: {analytics.emotional_connection}/10")
+
+        # Результат
+        click.echo(f"\n🎯 Результат:")
+        click.echo(f"   Статус: {analytics.dialogue_outcome or 'ongoing'}")
+        if analytics.failure_reason:
+            click.echo(f"   Причина неудачи: {analytics.failure_reason}")
+
+        click.echo(f"   Предложение работы: {'✅' if analytics.work_offer_made else '❌'}")
+        click.echo(f"   Принято: {'✅' if analytics.work_offer_accepted else '❌'}")
+
+        # Факты о собеседнице
+        facts = db_manager.get_person_facts(chat_id)
+        if facts:
+            click.echo(f"\n📝 Известные факты о ней ({len(facts)}):")
+            fact_groups = {}
+            for fact in facts[:10]:
+                if fact.fact_type not in fact_groups:
+                    fact_groups[fact.fact_type] = []
+                fact_groups[fact.fact_type].append(f"{fact.fact_value} ({fact.confidence:.1f})")
+
+            for fact_type, values in fact_groups.items():
+                click.echo(f"   {fact_type}: {', '.join(values)}")
+
+    except Exception as e:
+        click.echo(f"❌ Ошибка анализа: {e}")
+
+
+@cli.command()
+def analytics():
+    """Показать общую аналитику по всем диалогам"""
+    try:
+        summary = db_manager.get_analytics_summary()
+
+        if not summary.get('total_chats'):
+            click.echo("📭 Нет данных для аналитики")
+            return
+
+        click.echo("\n📊 Общая аналитика диалогов:")
+        click.echo("=" * 50)
+
+        click.echo(f"📈 Всего диалогов: {summary['total_chats']}")
+        click.echo(f"🎯 Средний скор перспективности: {summary['average_prospect_score']}/100")
+        click.echo(f"🤝 Средний уровень доверия: {summary['average_trust_level']}/10")
+
+        # Распределение по этапам
+        stage_dist = summary.get('stage_distribution', {})
+        if stage_dist:
+            click.echo(f"\n📋 Распределение по этапам:")
+            for stage, count in stage_dist.items():
+                percentage = (count / summary['total_chats']) * 100
+                click.echo(f"   {stage}: {count} ({percentage:.1f}%)")
+
+        # Результаты диалогов
+        outcome_dist = summary.get('outcome_distribution', {})
+        if outcome_dist:
+            click.echo(f"\n🎯 Результаты диалогов:")
+            for outcome, count in outcome_dist.items():
+                if outcome:  # Пропускаем None
+                    percentage = (count / summary['total_chats']) * 100
+                    click.echo(f"   {outcome}: {count} ({percentage:.1f}%)")
+
+    except Exception as e:
+        click.echo(f"❌ Ошибка получения аналитики: {e}")
+
+
+@cli.command()
+@click.option('--stage', '-s', help='Фильтр по этапу (initiation/retention/diagnosis/proposal)')
+@click.option('--limit', '-l', default=10, help='Количество чатов для показа')
+def prospects(stage: str, limit: int):
+    """Показать лучшие перспективы по скору"""
+    try:
+        with db_manager.get_session() as session:
+            query = session.query(DialogueAnalytics).join(Chat)
+
+            # Фильтрация по этапу
+            if stage:
+                query = query.filter(DialogueAnalytics.current_stage == stage)
+
+            # Только активные диалоги
+            query = query.filter(Chat.is_active == True)
+
+            # Сортировка по скору
+            prospects = query.order_by(DialogueAnalytics.prospect_score.desc()).limit(limit).all()
+
+            if not prospects:
+                click.echo(f"📭 Нет перспективных диалогов" + (f" на этапе {stage}" if stage else ""))
+                return
+
+            click.echo(f"\n🎯 Топ {len(prospects)} перспективных диалогов:")
+            click.echo("-" * 80)
+
+            for i, analytics in enumerate(prospects, 1):
+                chat = analytics.chat
+                name = chat.first_name or "Без имени"
+
+                click.echo(f"{i}. {name} (ID: {chat.id}) - Скор: {analytics.prospect_score}/100")
+                click.echo(f"   Этап: {analytics.current_stage} | "
+                           f"Доверие: {analytics.trust_level}/10 | "
+                           f"Финансы: {analytics.financial_readiness}")
+                click.echo(f"   Дней: {analytics.dialogue_duration_days} | "
+                           f"Сообщений: {analytics.total_messages}")
+                click.echo()
+
+    except Exception as e:
+        click.echo(f"❌ Ошибка получения перспектив: {e}")
+
+
+@cli.command()
+@click.option('--chat-id', '-c', type=int, help='ID чата')
+def facts(chat_id: int):
+    """Показать факты о собеседнице"""
+    if not chat_id:
+        click.echo("❌ Необходимо указать chat_id: -c CHAT_ID")
+        return
+
+    try:
+        facts_list = db_manager.get_person_facts(chat_id)
+
+        if not facts_list:
+            click.echo(f"📭 Нет фактов о собеседнице в чате {chat_id}")
+            return
+
+        # Получаем имя чата
+        chat = db_manager.get_session().query(Chat).filter(Chat.id == chat_id).first()
+        name = chat.first_name if chat else "Неизвестная"
+
+        click.echo(f"\n📝 Факты о {name} (Chat ID: {chat_id}):")
+        click.echo("-" * 60)
+
+        # Группируем факты по типам
+        fact_groups = {}
+        for fact in facts_list:
+            if fact.fact_type not in fact_groups:
+                fact_groups[fact.fact_type] = []
+            fact_groups[fact.fact_type].append(fact)
+
+        for fact_type, facts in fact_groups.items():
+            click.echo(f"\n🏷️  {fact_type.upper()}:")
+            for fact in facts:
+                confidence_icon = "🟢" if fact.confidence >= 0.8 else "🟡" if fact.confidence >= 0.6 else "🔴"
+                referenced = f" (использовано {fact.times_referenced}x)" if fact.times_referenced > 0 else ""
+                click.echo(f"   {confidence_icon} {fact.fact_value}{referenced}")
+                click.echo(f"      Уверенность: {fact.confidence:.1f} | "
+                           f"Впервые: {fact.first_mentioned.strftime('%d.%m %H:%M')}")
+
+    except Exception as e:
+        click.echo(f"❌ Ошибка получения фактов: {e}")
+
+
+@cli.command()
+def failures():
+    """Анализ неудачных диалогов для обучения"""
+    try:
+        with db_manager.get_session() as session:
+            failed_dialogs = session.query(DialogueAnalytics).filter(
+                DialogueAnalytics.dialogue_outcome == "failure"
+            ).all()
+
+            if not failed_dialogs:
+                click.echo("✅ Нет неудачных диалогов для анализа")
+                return
+
+            click.echo(f"\n❌ Анализ {len(failed_dialogs)} неудачных диалогов:")
+            click.echo("=" * 60)
+
+            # Группируем по причинам неудач
+            failure_reasons = {}
+            for dialog in failed_dialogs:
+                reason = dialog.failure_reason or "unknown"
+                if reason not in failure_reasons:
+                    failure_reasons[reason] = []
+                failure_reasons[reason].append(dialog)
+
+            for reason, dialogs in failure_reasons.items():
+                click.echo(f"\n🚨 {reason} ({len(dialogs)} случаев):")
+
+                # Средние метрики для этой группы
+                avg_prospect = sum(d.prospect_score for d in dialogs) / len(dialogs)
+                avg_trust = sum(d.trust_level for d in dialogs) / len(dialogs)
+                avg_days = sum(d.dialogue_duration_days for d in dialogs) / len(dialogs)
+
+                click.echo(f"   📊 Средние показатели:")
+                click.echo(f"      Скор перспективности: {avg_prospect:.1f}/100")
+                click.echo(f"      Уровень доверия: {avg_trust:.1f}/10")
+                click.echo(f"      Продолжительность: {avg_days:.1f} дней")
+
+                # Показываем несколько примеров
+                click.echo(f"   📋 Примеры:")
+                for dialog in dialogs[:3]:
+                    chat = dialog.chat
+                    name = chat.first_name or "Без имени"
+                    click.echo(f"      • {name} (ID: {chat.id}) - {dialog.current_stage} этап")
+
+    except Exception as e:
+        click.echo(f"❌ Ошибка анализа неудач: {e}")
+
+
+# ОБНОВИТЬ команду status для показа аналитики:
+@cli.command()
+def status():
+    """Показать расширенный статус приложения"""
+
+    async def _status():
+        status = await app.get_status()
+
+        click.echo("\n📊 Статус Telegram AI Companion:")
+        click.echo("=" * 50)
+        click.echo(f"   Мониторинг: {'🟢 Активен' if status.get('monitoring') else '🔴 Остановлен'}")
+        click.echo(f"   Telegram: {'🟢 Подключен' if status.get('telegram_connected') else '🔴 Отключен'}")
+        click.echo(f"   Очередь ответов: {status.get('response_queue_size', 0)}")
+        click.echo(f"   Активные чаты: {status.get('active_chats', 0)}")
+
+        # Telegram статистика
+        telegram_stats = status.get('telegram_stats', {})
+        if telegram_stats:
+            click.echo(f"\n📱 Telegram статистика:")
+            click.echo(f"   Отправлено сообщений: {telegram_stats.get('messages_sent', 0)}")
+            click.echo(f"   Успешных запросов: {telegram_stats.get('successful_requests', 0)}")
+            click.echo(f"   Ошибок: {telegram_stats.get('failed_requests', 0)}")
+
+        # Новая аналитика диалогов
+        analytics_summary = db_manager.get_analytics_summary()
+        if analytics_summary.get('total_chats', 0) > 0:
+            click.echo(f"\n🎯 Аналитика диалогов:")
+            click.echo(f"   Всего диалогов: {analytics_summary['total_chats']}")
+            click.echo(f"   Средний скор: {analytics_summary['average_prospect_score']}/100")
+            click.echo(f"   Средний уровень доверия: {analytics_summary['average_trust_level']}/10")
+
+            # Топ этапы
+            stage_dist = analytics_summary.get('stage_distribution', {})
+            if stage_dist:
+                top_stage = max(stage_dist.keys(), key=lambda k: stage_dist[k])
+                click.echo(f"   Популярный этап: {top_stage} ({stage_dist[top_stage]} диалогов)")
+
+    asyncio.run(_status())
 
 if __name__ == "__main__":
     cli()
