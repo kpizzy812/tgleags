@@ -40,11 +40,11 @@ class ResponseGenerator:
             if self._should_terminate_dialogue(new_messages):
                 return self._get_termination_response()
 
-            # Генерация через единый промпт
-            response = await self._generate_natural_response(conversation_history, new_messages)
+            # Генерация через единый промпт с учетом фактов
+            response = await self._generate_natural_response(conversation_history, new_messages, chat_id)
 
             if not response:
-                return self._get_simple_fallback(new_messages)
+                return self._get_simple_fallback(new_messages, chat_id)
 
             # Простые улучшения реалистичности
             response = self._make_more_human(response)
@@ -57,7 +57,7 @@ class ResponseGenerator:
 
         except Exception as e:
             logger.error(f"❌ Ошибка генерации ответа: {e}")
-            return self._get_simple_fallback(message_batch.total_text)
+            return self._get_simple_fallback(message_batch.total_text, chat_id)
 
     def _should_terminate_dialogue(self, message_text: str) -> bool:
         """Простая проверка на негатив к крипто"""
@@ -78,7 +78,7 @@ class ResponseGenerator:
         ]
         return random.choice(responses)
 
-    async def _generate_natural_response(self, history: str, new_messages: str) -> Optional[str]:
+    async def _generate_natural_response(self, history: str, new_messages: str, chat_id: int) -> Optional[str]:
         """Генерация естественного ответа через единый промпт"""
 
         # ЧЕЛОВЕЧНЫЙ системный промпт
