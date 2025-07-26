@@ -28,15 +28,15 @@ except ImportError as e:
 async def test_response_generation():
     """Тест генерации ответов с новой биографией Стаса"""
     setup_logging()
-    
+
     print("🧪 Тестирование генерации ответов с биографией Стаса...")
     print(f"👤 Персонаж: {character_settings.name}, {character_settings.age} лет, {character_settings.occupation}")
     print("-" * 80)
-    
+
     try:
         # Создаем генератор ответов
         generator = ResponseGenerator()
-        
+
         # Тестовые сообщения для проверки
         test_scenarios = [
             {
@@ -68,14 +68,24 @@ async def test_response_generation():
                 "name": "Свободное время",
                 "messages": ["А свободное время как проводишь?"],
                 "expected": "Рассказ об интересах + встречный вопрос"
+            },
+            {
+                "name": "Жалобы на деньги",
+                "messages": ["Мало платят на работе, денег не хватает"],
+                "expected": "Понимание + возможное предложение помощи"
+            },
+            {
+                "name": "Дорогие мечты",
+                "messages": ["Хочу купить машину, но дорого"],
+                "expected": "Понимание + интерес"
             }
         ]
-        
+
         for i, scenario in enumerate(test_scenarios, 1):
             print(f"\n{i}. 📝 Тест: {scenario['name']}")
             print(f"   Входящее: {' | '.join(scenario['messages'])}")
             print(f"   Ожидается: {scenario['expected']}")
-            
+
             # Создаем фейковые сообщения для тестирования
             fake_messages = []
             for msg_text in scenario['messages']:
@@ -86,62 +96,73 @@ async def test_response_generation():
                     created_at=datetime.utcnow()
                 )
                 fake_messages.append(fake_message)
-            
+
             # Создаем пакет сообщений
             message_batch = MessageBatch(fake_messages)
-            
+
             # Генерируем ответ
             try:
                 response = await generator.generate_response_for_batch(999, message_batch)
-                
+
                 if response:
                     print(f"   ✅ Ответ: {response}")
-                    
+
                     # Анализируем качество
                     analysis = []
                     if len(response.split('.')) <= 2:
                         analysis.append("✅ Короткий")
                     else:
                         analysis.append("❌ Слишком длинный")
-                    
+
                     if '?' in response:
                         analysis.append("✅ Есть вопрос")
                     else:
                         analysis.append("⚠️ Нет встречного вопроса")
-                    
+
                     if any(word in response.lower() for word in ['трейдинг', 'криптовалют', 'крипт']):
                         analysis.append("✅ Упоминает работу")
-                    
+
+                    # Проверяем живые реакции
+                    if any(word in response.lower() for word in ['ого', 'блин', 'круто', 'жесть']):
+                        analysis.append("✅ Живые эмоции")
+
                     print(f"   📊 Анализ: {' | '.join(analysis)}")
                 else:
                     print(f"   ❌ Не удалось сгенерировать ответ")
-                    
+
             except Exception as e:
                 print(f"   ❌ Ошибка генерации: {e}")
-            
+
             print("-" * 60)
-        
+
         # Проверка настроек персонажа
         print(f"\n📋 Проверка настроек персонажа:")
         print(f"   Имя: {character_settings.name}")
         print(f"   Возраст: {character_settings.age}")
         print(f"   Профессия: {character_settings.occupation}")
+        print(f"   Город: {character_settings.location}")
         print(f"   Интересы: {', '.join(character_settings.interests[:3])}...")
-        
+
         print(f"\n📖 Биография (первые 100 символов):")
         print(f"   {character_settings.background_story[:100]}...")
-        
-        print(f"\n💼 Детали работы:")
-        work_details = character_settings.work_details
-        print(f"   Тип: {work_details.get('company_type', 'не указан')}")
-        print(f"   Опыт: {work_details.get('career_start', 'не указан')}")
-        
+
+        print(f"\n💬 Стиль общения:")
+        style = character_settings.communication_style
+        print(f"   Длина сообщений: {style.get('message_length', 'не указано')}")
+        print(f"   Встречные вопросы: {style.get('always_ask_back', 'не указано')}")
+        print(f"   Эмоциональность: {style.get('be_emotional', 'не указано')}")
+
+        print(f"\n🎯 Триггеры помощи:")
+        triggers = character_settings.help_offer_triggers
+        print(f"   Количество: {len(triggers)}")
+        print(f"   Примеры: {', '.join(triggers[:3])}...")
+
         print(f"\n🎯 Системный промпт (первые 200 символов):")
         print(f"   {character_settings.system_prompt[:200]}...")
-        
+
         print(f"\n✅ Тестирование завершено!")
         print(f"💡 Если ответы выглядят реалистично - можно запускать на реальных диалогах")
-        
+
     except Exception as e:
         logger.error(f"❌ Ошибка тестирования: {e}")
         import traceback
@@ -152,7 +173,7 @@ async def main():
     """Главная функция"""
     print("🚀 Запуск тестирования качества ответов...")
     print(f"📁 Текущая директория: {os.getcwd()}")
-    
+
     await test_response_generation()
 
 

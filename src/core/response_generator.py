@@ -81,7 +81,7 @@ class ResponseGenerator:
     async def _generate_natural_response(self, history: str, new_messages: str, chat_id: int) -> Optional[str]:
         """Генерация естественного ответа через единый промпт"""
 
-        # ЧЕЛОВЕЧНЫЙ системный промпт
+        # ЧЕЛОВЕЧНЫЙ системный промпт с базовыми знаниями
         system_prompt = f"""Ты Стас, 27 лет, обычный парень из Москвы. Познакомился с девушкой в интернете.
 
 О ТЕБЕ:
@@ -90,6 +90,7 @@ class ResponseGenerator:
 - Родители: отец в Турции, мама в Испании
 - Раньше работал на стройке промышленным альпинистом
 - Обычный парень - любишь поговорить, узнать человека
+- В курсе популярной культуры, моды, брендов (знаешь что стоник = Stone Island, сник = кроссовки и тд)
 
 СТИЛЬ ОБЩЕНИЯ:
 - Короткие сообщения (1-2 предложения)
@@ -97,6 +98,7 @@ class ResponseGenerator:
 - Будь живым и естественным
 - Реагируй эмоционально: "ого", "блин", "жесть", "круто"
 - Проявляй интерес к её жизни
+- Если знаешь о чем речь - показывай это естественно
 
 ЕСТЕСТВЕННОЕ РАЗВИТИЕ:
 - Сначала базовые темы: работа, хобби, планы
@@ -108,8 +110,9 @@ class ResponseGenerator:
 "Круто! Я трейдингом занимаюсь. А ты работой довольна?"
 "Понимаю, сам иногда устаю. Что планируешь на выходные?"
 "Ого, интересно! А давно этим увлекаешься?"
+"О, стоник крутой! Сам иногда покупаю. А что больше всего нравится?"
 
-Отвечай как живой парень, НЕ как консультант или бот."""
+Отвечай как живой парень, НЕ как консультант или бот. Если знаешь о чем речь - не притворяйся что не знаешь."""
 
         user_prompt = f"""НЕДАВНЯЯ ПЕРЕПИСКА:
 {history}
@@ -128,8 +131,8 @@ class ResponseGenerator:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    temperature=0.9,  # Больше креативности
-                    max_tokens=100,   # Короткие ответы
+                    temperature=0.7,   # Снижаем для большей стабильности
+                    max_tokens=150,    # Увеличиваем для полных ответов
                     timeout=60
                 )
 
@@ -144,20 +147,24 @@ class ResponseGenerator:
         return None
 
     def _make_more_human(self, response: str) -> str:
-        """Делаем ответ более человечным"""
+        """Делаем ответ более человечным - без потери знаний"""
 
-        # Убираем излишнюю вежливость
+        # Убираем только явную роботичность, сохраняя знания
         response = response.replace("Очень интересно", "Интересно")
         response = response.replace("Большое спасибо", "Спасибо")
         response = response.replace("рад познакомиться", "")
+        response = response.replace("К сожалению, я не знаю", "Не слышал про")
+        response = response.replace("Извините, но", "")
+
+        # НЕ убираем знания о брендах, терминологии и тд
 
         # Добавляем живые реакции
         if any(word in response.lower() for word in ["здорово", "отлично", "классно"]):
             if random.random() < 0.4:
                 response += ")"
 
-        # Случайные опечатки (10% шанс)
-        if len(response) > 15 and random.random() < 0.1:
+        # Случайные опечатки (5% шанс, меньше чем было)
+        if len(response) > 15 and random.random() < 0.05:
             response = add_random_typo(response)
 
         # Укорачиваем если слишком длинный
@@ -175,7 +182,7 @@ class ResponseGenerator:
             message_lower = message_text.lower()
 
             # Работа
-            work_keywords = ["работаю", "работа у меня", "я администратор", "я менеджер"]
+            work_keywords = ["работаю", "работа у меня", "я администратор", "я менеджер", "дизайном занимаюсь"]
             for keyword in work_keywords:
                 if keyword in message_lower:
                     # Извлекаем профессию простым способом
@@ -183,7 +190,34 @@ class ResponseGenerator:
                         db_manager.save_person_fact(chat_id, "job", "администратор", 0.8)
                     elif "менеджер" in message_lower:
                         db_manager.save_person_fact(chat_id, "job", "менеджер", 0.8)
+                    elif "дизайном занимаюсь" in message_lower:
+                        db_manager.save_person_fact(chat_id, "job", "дизайнер одежды", 0.9)
                     break
+
+            # Хобби и интересы
+            hobby_patterns = {
+                "велосипед": "катается на велосипеде",
+                "дизайн одежды": "дизайн одежды",
+                "фотограф": "фотография",
+                "спорт": "спорт"
+            }
+
+            for pattern, hobby in hobby_patterns.items():
+                if pattern in message_lower:
+                    db_manager.save_person_fact(chat_id, "hobby", hobby, 0.8)
+
+            # Любимые бренды
+            brand_patterns = {
+                "kenzo": "KENZO",
+                "стоник": "Stone Island",
+                "stone island": "Stone Island",
+                "найк": "Nike",
+                "адидас": "Adidas"
+            }
+
+            for pattern, brand in brand_patterns.items():
+                if pattern in message_lower:
+                    db_manager.save_person_fact(chat_id, "favorite_brand", brand, 0.9)
 
             # Жалобы на деньги
             money_complaints = ["мало платят", "денег не хватает", "зарплата маленькая"]
@@ -208,11 +242,11 @@ class ResponseGenerator:
         message_lower = message_text.lower()
 
         # Простые паттерны
-        if "работа" in message_lower:
+        if "работа" in message_lower or "дизайн" in message_lower:
             responses = [
                 "Понятно. Я трейдингом занимаюсь. А тебе работа нравится?",
                 "Ясно. Сам работаю на себя в крипте. Как дела на работе?",
-                "Понимаю. А что на работе происходит?"
+                "Интересно! А что больше всего в дизайне нравится?"
             ]
         elif "устала" in message_lower or "тяжело" in message_lower:
             responses = [
