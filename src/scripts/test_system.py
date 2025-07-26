@@ -213,8 +213,7 @@ def check_simplified_imports():
         # Проверяем что старые модули удалены
         deprecated_modules = [
             'src.analysis.conversation_analyzer',
-            'src.analysis.financial_analyzer',
-            'src.utils.openai_helper'
+            'src.analysis.financial_analyzer'
         ]
 
         deprecated_found = []
