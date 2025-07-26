@@ -55,7 +55,7 @@ class DatabaseManager:
         # Создаем синхронные подключения для простоты в MVP
         self.engine = create_engine(
             settings.database_url.replace("sqlite://", "sqlite+pysqlite://"),
-            echo=(settings.log_level == "DEBUG"),
+            echo=False,  #(settings.log_level == "DEBUG"),
             pool_pre_ping=True
         )
         self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)

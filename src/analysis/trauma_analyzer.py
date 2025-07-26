@@ -255,29 +255,24 @@ class TraumaAnalyzer:
         except Exception as e:
             logger.error(f"❌ Ошибка генерации ответа на травму: {e}")
             return "Сочувствую... Это тяжело. Как ты с этим справляешься?"
-    
+
     def should_share_stas_story(self, story_recommendations: Dict, trust_level: int) -> Tuple[bool, str, str]:
         """Определить нужно ли делиться историей Стаса"""
         recommended_story = story_recommendations.get("recommended_story")
         readiness = story_recommendations.get("readiness_level", "низкая")
-        
+
         if recommended_story and readiness in ["высокая", "средняя"] and trust_level >= 6:
-            story_data = self.stas_stories[recommended_story]
-            
-            if readiness == "высокая":
-                return True, recommended_story, story_data["full_story"]
-            else:
-                # Короткая версия для средней готовности
-                short_version = self._get_story_teaser(recommended_story)
-                return True, recommended_story, short_version
-        
+            # ВСЕГДА используем короткую версию с вопросом
+            short_version = self._get_story_teaser(recommended_story)
+            return True, recommended_story, short_version
+
         return False, "", ""
-    
+
     def _get_story_teaser(self, story_id: str) -> str:
         """Короткая версия истории для тестирования реакции"""
         teasers = {
-            "child_friend_death": "У меня в детстве был лучший друг... В 13 лет его убили из-за какой-то глупости. До сих пор помню.",
-            "partner_loss": "Были серьезные отношения, планировали семью... Но потерял их обоих при родах. Это изменило всё."
+            "child_friend_death": "У меня в детстве был лучший друг... В 13 лет его убили из-за какой-то глупости. До сих пор помню. Как ты справляешься с болью?",
+            "partner_loss": "Были серьезные отношения, планировали семью... Но потерял их обоих при родах. Это изменило всё. Время лечит или шрамы остаются?"
         }
         return teasers.get(story_id, "")
     

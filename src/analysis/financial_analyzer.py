@@ -159,7 +159,17 @@ class FinancialAnalyzer:
 
         except Exception as e:
             logger.error(f"❌ Ошибка ИИ анализа финансов: {e}")
-            return self._get_default_financial_analysis()
+            return {
+                "financial_stress_level": 5,
+                "job_satisfaction": 5,
+                "openness_to_opportunities": 5,
+                "money_complaints_detected": [],
+                "expensive_dreams_mentioned": [],
+                "work_problems": [],
+                "potential_motivation": "Не определено",
+                "readiness_indicators": [],
+                "red_flags": []
+            }
 
     def _clean_json_response(self, content: str) -> str:
         """Очистка ответа OpenAI от markdown оберток"""
@@ -191,24 +201,37 @@ class FinancialAnalyzer:
 
     def _calculate_overall_score(self, complaint_scores: Dict, ai_analysis: Dict) -> int:
         """Расчет общего финансового скора (1-10)"""
-        # Базовый скор из паттернов
-        pattern_score = sum(complaint_scores.values()) * 2
-        
-        # ИИ скор
-        ai_stress = ai_analysis.get("financial_stress_level", 5)
-        ai_openness = ai_analysis.get("openness_to_opportunities", 5)
-        
+        # Защита от None значений
+        pattern_score = sum(v for v in complaint_scores.values() if v is not None) * 2
+
+        # Правильная защита от None из OpenAI
+        ai_stress = ai_analysis.get("financial_stress_level") or 5
+        ai_openness = ai_analysis.get("openness_to_opportunities") or 5
+
+        # Приводим к int
+        pattern_score = int(pattern_score)
+        ai_stress = int(ai_stress)
+        ai_openness = int(ai_openness)
+
         # Комбинированный скор
         combined_score = min(10, (pattern_score + ai_stress + ai_openness) // 3)
-        
+
         return max(1, combined_score)
-    
+
     def _determine_readiness_level(self, complaint_scores: Dict, ai_analysis: Dict) -> str:
         """Определение уровня готовности к предложению"""
-        total_complaints = sum(complaint_scores.values())
-        stress_level = ai_analysis.get("financial_stress_level", 5)
-        openness = ai_analysis.get("openness_to_opportunities", 5)
-        
+        # Защита от None в complaint_scores
+        total_complaints = sum(v for v in complaint_scores.values() if v is not None)
+
+        # Защита от None из OpenAI - правильный способ
+        stress_level = ai_analysis.get("financial_stress_level") or 5
+        openness = ai_analysis.get("openness_to_opportunities") or 5
+
+        # Убеждаемся что всё int
+        total_complaints = int(total_complaints)
+        stress_level = int(stress_level)
+        openness = int(openness)
+
         if total_complaints >= 3 and stress_level >= 7 and openness >= 7:
             return "высокая"
         elif total_complaints >= 2 and stress_level >= 5 and openness >= 6:

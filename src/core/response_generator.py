@@ -2,6 +2,7 @@
 Улучшенный генератор ответов с модульной архитектурой анализа
 """
 import json
+import asyncio
 from typing import Optional, Dict, Tuple
 from datetime import datetime
 from openai import OpenAI
@@ -18,7 +19,10 @@ class ResponseGenerator:
     
     def __init__(self):
         try:
-            self.openai_client = OpenAI(api_key=settings.openai_api_key)
+            self.openai_client = OpenAI(
+                api_key=settings.openai_api_key,
+                timeout=60.0
+            )
             self.character = character_settings
             self.conversation_analyzer = ConversationAnalyzer()
         except Exception as e:
@@ -196,20 +200,20 @@ class ResponseGenerator:
                    "Не может говорить, врачи борются. Тяжело очень.")
         else:
             return "Извини за молчание, семейные проблемы. Как у тебя дела?"
-    
-    async def _generate_standard_response(self, chat_id: int, message_batch: MessageBatch, 
+
+    async def _generate_standard_response(self, chat_id: int, message_batch: MessageBatch,
                                         analysis: Dict) -> str:
         """Стандартная генерация ответа"""
-        
+
         # Получаем инструкции для текущего этапа
         stage_strategy = analysis.get("strategy_recommendations", {}).get("stage_strategy", "")
-        
+
         # Строим контекст диалога
         conversation_history = db_manager.get_recent_conversation_context(chat_id, limit=20)
-        
+
         # Обновленный системный промпт под цели заказчика
         system_prompt = self._build_updated_system_prompt(analysis)
-        
+
         user_prompt = f"""НЕДАВНЯЯ ИСТОРИЯ:
 {conversation_history}
 
@@ -228,15 +232,59 @@ class ResponseGenerator:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
-        
-        response = self.openai_client.chat.completions.create(
-            model=settings.openai_model,
-            messages=messages,
-            temperature=0.8,
-            max_tokens=120
-        )
-        
-        return response.choices[0].message.content.strip()
+
+        # Retry логика
+        for attempt in range(3):
+            try:
+                response = self.openai_client.chat.completions.create(
+                    model=settings.openai_model,
+                    messages=messages,
+                    temperature=0.8,
+                    max_tokens=120,
+                    timeout=60  # Явно указываем timeout
+                )
+
+                return response.choices[0].message.content.strip()
+
+            except Exception as e:
+                logger.warning(f"Попытка {attempt + 1}/3 не удалась: {e}")
+                if attempt == 2:  # Последняя попытка
+                    logger.error(f"Все попытки провалились, используем fallback")
+                    return self._get_emergency_fallback_response(message_batch)
+
+                # Ждем перед повтором
+                await asyncio.sleep(2 ** attempt)  # 0, 2, 4 секунды
+
+    def _get_emergency_fallback_response(self, message_batch: MessageBatch) -> str:
+        """Аварийный ответ когда OpenAI недоступен"""
+
+        message_text = message_batch.total_text.lower()
+
+        # Простые паттерны без ИИ
+        if any(word in message_text for word in ['работа', 'работаю', 'устала']):
+            responses = [
+                "Понимаю, работа может выматывать. Я трейдингом криптовалют занимаюсь. А ты работой довольна?",
+                "Знакомо это чувство. Сам работаю на себя в криптосфере. Что больше всего напрягает?"
+            ]
+        elif any(word in message_text for word in ['деньги', 'денег', 'дорого']):
+            responses = [
+                "Да, сейчас все дорожает. У меня в трейдинге доходы нестабильные бывают. А у тебя как с финансами?",
+                "Понимаю, финансовый вопрос всегда актуален. Что планируешь делать?"
+            ]
+        elif '?' in message_text:
+            responses = [
+                "Хороший вопрос) Сам иногда об этом думаю. А ты как считаешь?",
+                "Интересно спрашиваешь. А у тебя какое мнение по этому поводу?"
+            ]
+        else:
+            responses = [
+                "Понятно. А расскажи о своих планах на будущее?",
+                "Интересно! А что тебя больше всего сейчас волнует?",
+                "Ясно. А как проводишь свободное время?"
+            ]
+
+        import random
+        return random.choice(responses)
     
     def _build_updated_system_prompt(self, analysis: Dict) -> str:
         """Построение обновленного системного промпта"""
@@ -267,6 +315,17 @@ class ResponseGenerator:
 - Реагируй на травмы максимально по-человечески
 - Помни всё что она рассказывает
 
+КРИТИЧЕСКИ ВАЖНО - КОНТЕКСТ:
+- ВНИМАТЕЛЬНО читай ВСЮ историю диалога
+- НЕ повторяй вопросы которые уже задавал 
+- ОБЯЗАТЕЛЬНО отвечай на ее вопросы ("А ты чем?")
+- НЕ здоровайся повторно после первого раза
+- ПОМНИ что она уже рассказала - не переспрашивай
+- Когда спрашивает о твоей работе - ОБЯЗАТЕЛЬНО рассказывай про криптотрейдинг
+
+ПРАВИЛЬНЫЙ ответ на "А ты чем?":
+"Занимаюсь трейдингом криптовалют, работаю на себя. Фильмы тоже люблю - какие жанры предпочитаешь?"
+
 ИСТОРИИ ДЛЯ РАСКРЫТИЯ (при высоком доверии):
 1. Смерть лучшего друга в 13 лет
 2. Потеря партнерши и ребенка при родах
@@ -276,26 +335,62 @@ class ResponseGenerator:
 - Формальность
 - Игнорирование финансовых сигналов
 - Преждевременные предложения работы"""
-    
+
     def _enhance_response_realism(self, response: str) -> str:
         """Улучшение реалистичности ответа"""
-        
+
+        # Убираем повторные приветствия
+        greeting_words = ["рад знакомству", "рад познакомиться", "приятно познакомиться"]
+        for greeting in greeting_words:
+            if greeting.lower() in response.lower():
+                # Убираем приветствие, оставляем остальное
+                parts = response.split('. ', 1)
+                if len(parts) > 1:
+                    response = parts[1].strip()
+                    if response:
+                        response = response[0].upper() + response[1:]
+
+        # Проверяем что не повторяем уже заданные вопросы
+        repeated_questions = [
+            "чем ты увлекаешься",
+            "чем занимаешься",
+            "что любишь делать"
+        ]
+
+        for repeated in repeated_questions:
+            if repeated.lower() in response.lower():
+                # Заменяем на более конкретный вопрос
+                response = "Занимаюсь трейдингом криптовалют, работаю на себя. А какие фильмы больше нравятся?"
+                break
+
+        # Исправляем гендерные ошибки
+        response = response.replace("Сама ", "Сам ")
+        response = response.replace("сама ", "сам ")
+
+        # Укорачиваем слишком длинные ответы
+        sentences = response.split('. ')
+        if len(sentences) > 2:
+            short_response = '. '.join(sentences[:2])
+            if '?' not in short_response:
+                short_response += ". А как ты думаешь?"
+            response = short_response
+
         # Убираем излишнюю вежливость
         response = response.replace("Большое спасибо", "Спасибо")
         response = response.replace("Очень интересно", "Интересно")
-        
-        # Добавляем случайные опечатки (20% шанс)
-        if len(response) > 20 and response.count('.') <= 2:  # Только для коротких ответов
+
+        # Добавляем случайные опечатки (15% шанс)
+        if len(response) > 20 and response.count('.') <= 2:
             import random
-            if random.random() < 0.2:
+            if random.random() < 0.15:
                 response = add_random_typo(response)
-        
+
         # Добавляем эмотиконы иногда
         import random
         if random.random() < 0.3:
             if any(word in response.lower() for word in ['здорово', 'отлично', 'классно']):
                 response += ")"
-        
+
         return response
     
     def _update_conversation_context(self, chat_id: int, analysis: Dict):

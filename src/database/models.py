@@ -62,24 +62,25 @@ class Message(Base):
 class ChatContext(Base):
     """Контекст чата для ИИ"""
     __tablename__ = "chat_contexts"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     chat_id = Column(Integer, ForeignKey("chats.id"), unique=True, nullable=False)
-    
+
     # Информация о собеседнице
     financial_profile = Column(Text)  # JSON с финансовым профилем
-    emotional_profile = Column(Text)  # JSON с эмоциональным профилем  
+    emotional_profile = Column(Text)  # JSON с эмоциональным профилем
     dialogue_stage_history = Column(Text)  # JSON история этапов
     personality_notes = Column(Text, nullable=True)  # Заметки о личности
     relationship_stage = Column(String(50), default="initial")  # initial, friendly, close, etc.
-    
+    detected_interests = Column(Text, nullable=True)  # JSON массив интересов ← ДОБАВИТЬ ЭТУ СТРОКУ
+
     # Статистика
     messages_count = Column(Integer, default=0)
     ai_messages_count = Column(Integer, default=0)
-    
+
     # Последнее обновление
     updated_at = Column(DateTime, default=datetime.utcnow)
-    
+
     # Связи
     chat = relationship("Chat", back_populates="context")
 
