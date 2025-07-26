@@ -45,6 +45,7 @@ sessions/*.session-journal
 
 # Logs
 logs/*.log
+backups/
 
 # IDE
 .vscode/
