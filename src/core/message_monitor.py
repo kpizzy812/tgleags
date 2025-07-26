@@ -160,7 +160,7 @@ class MessageMonitor:
                 return
 
             # Рассчитываем естественную задержку
-            delay = self._calculate_natural_delay(message_batch)
+            delay = self._calculate_natural_delay(message_batch, chat_id)
             send_time = datetime.utcnow() + timedelta(seconds=delay)
 
             # Добавляем в очередь
@@ -180,8 +180,8 @@ class MessageMonitor:
         except Exception as e:
             logger.error(f"Ошибка обработки чата {chat.id}: {e}")
 
-    def _calculate_natural_delay(self, message_batch: MessageBatch) -> int:
-        """Расчет естественной задержки ответа"""
+    def _calculate_natural_delay(self, message_batch: MessageBatch, chat_id: int) -> int:
+        """Расчет естественной задержки с учетом фактов"""
 
         # Базовая задержка
         base_delay = random.randint(8, 25)
@@ -203,6 +203,18 @@ class MessageMonitor:
         # Корректировка по количеству сообщений
         if len(message_batch.messages) > 1:
             base_delay += len(message_batch.messages) * 3
+
+        # Корректировка по этапу отношений (простая логика)
+        try:
+            facts = db_manager.get_person_facts(chat_id)
+            fact_count = len(facts)
+
+            if fact_count >= 3:  # Знаем много о собеседнице - быстрее отвечаем
+                base_delay *= 0.7
+            elif fact_count == 0:  # Только знакомимся - медленнее
+                base_delay *= 1.3
+        except Exception:
+            pass
 
         # Случайность для естественности
         randomness = random.uniform(0.7, 1.3)

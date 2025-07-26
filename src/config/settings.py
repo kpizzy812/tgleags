@@ -1,5 +1,5 @@
 """
-Конфигурация приложения
+Упрощенная конфигурация приложения
 """
 import os
 from typing import Optional, Dict
@@ -17,35 +17,35 @@ except ImportError:
 
 class Settings(BaseSettings):
     """Основные настройки приложения"""
-    
+
     # Telegram API
     telegram_api_id: int = Field(..., description="Telegram API ID")
     telegram_api_hash: str = Field(..., description="Telegram API Hash")
     telegram_phone: str = Field(..., description="Phone number for Telegram")
-    
+
     # OpenAI API
     openai_api_key: str = Field(..., description="OpenAI API Key")
     openai_model: str = Field(default="gpt-4o-mini", description="OpenAI model to use")
     openai_max_tokens: int = Field(default=150, description="Max tokens for OpenAI response")
     openai_temperature: float = Field(default=0.8, description="Temperature for OpenAI")
-    
+
     # Database
     database_url: str = Field(default="sqlite:///./telegram_ai.db", description="Database URL")
-    
+
     # Logging
     log_level: str = Field(default="DEBUG", description="Logging level")
     log_file: str = Field(default="logs/app.log", description="Log file path")
-    
+
     # Application
     session_name: str = Field(default="ai_companion", description="Telegram session name")
     monitor_interval: int = Field(default=10, description="Message monitoring interval in seconds")
     max_concurrent_chats: int = Field(default=10, description="Maximum concurrent chats")
-    
+
     # Response settings
     min_response_delay: int = Field(default=5, description="Minimum response delay in seconds")
-    max_response_delay: int = Field(default=30, description="Maximum response delay in seconds")
+    max_response_delay: int = Field(default=60, description="Maximum response delay in seconds")
     typing_duration: int = Field(default=3, description="Typing indicator duration in seconds")
-    
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
@@ -95,8 +95,8 @@ class CharacterSettings(BaseSettings):
     communication_style: dict = Field(
         default={
             "message_length": "1-2 предложения максимум",
-            "always_ask_back": "Часто задавать встречный вопрос и развивать диалог",
-            "be_emotional": "Живые реакции: ого, блин, круто, жесть, лол",
+            "always_ask_back": "Всегда задавать встречный вопрос",
+            "be_emotional": "Живые реакции: ого, блин, круто, жесть",
             "be_interested": "Проявлять искренний интерес к собеседнице",
             "be_casual": "Непринужденный дружелюбный стиль",
             "no_formality": "Никакой официальности или заученности"
@@ -139,9 +139,8 @@ class CharacterSettings(BaseSettings):
 
 КАК ОБЩАЕШЬСЯ:
 - Короткие сообщения (1-2 предложения)
-- Всегда стараешься поддерживать беседу, инициативный и харизматичный
+- Всегда встречный вопрос
 - Живые эмоции: "ого", "круто", "блин"
-- Юмор, самоуверенный и открытый
 - Искренний интерес к ней
 - Никакой заученности или формальности
 
