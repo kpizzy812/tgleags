@@ -233,15 +233,35 @@ class DatabaseManager:
             }
 
     def get_recent_conversation_context(self, chat_id: int, limit: int = 20) -> str:
-        """Получить контекст разговора для ИИ"""
+        """Получить контекст разговора для ИИ с временными метками"""
         messages = self.get_chat_messages(chat_id, limit)
 
         context_lines = []
         for msg in messages[-limit:]:
-            role = "Стас" if msg.is_from_ai else "Она"
-            timestamp = msg.created_at.strftime("%H:%M")
+            role = "Стас" if msg.is_from_ai else "Девушка"
             text = msg.text or ""
-            context_lines.append(f"[{timestamp}] {role}: {text}")
+
+            # Конвертируем в UTC+3 (московское время)
+            moscow_time = msg.created_at.replace(tzinfo=None)  # Убираем UTC если есть
+            moscow_time = moscow_time + timedelta(hours=3)  # Добавляем 3 часа для UTC+3
+
+            # Форматируем дату и время
+            date_str = moscow_time.strftime("%d.%m.%Y")
+            time_str = moscow_time.strftime("%H:%M")
+
+            # Очищаем текст от служебной информации из старых сообщений
+            import re
+            text = re.sub(r'\[\d{2}:\d{2}:\d{2}\]\s*', '', text)
+            text = re.sub(r'\[\d{2}:\d{2}\]\s*', '', text)
+            text = re.sub(r'Стас:\s*', '', text)
+            text = re.sub(r'Девушка:\s*', '', text)
+            text = re.sub(r'Она:\s*', '', text)
+            text = re.sub(r'ИИ:\s*', '', text)
+            text = re.sub(r'Пользователь:\s*', '', text)
+            text = re.sub(r'\s+', ' ', text).strip()
+
+            if text:  # Добавляем только если есть текст
+                context_lines.append(f"[{date_str} {time_str}] {role}: {text}")
 
         return "\n".join(context_lines)
 
@@ -402,23 +422,127 @@ class DatabaseManager:
 
             return unanswered_chats
 
+    def get_or_create_dialogue_stage(self, chat_id: int) -> Dict:
+        """Получить или создать этап диалога"""
+        try:
+            from .models import DialogueStage
 
-# УДАЛЕНО (переусложнение):
-# ❌ save_dialogue_analysis() - сложная аналитика
-# ❌ get_dialogue_analytics() - роботизированные метрики
-# ❌ get_analytics_summary() - избыточная статистика
-# ❌ update_dialogue_outcome() - механистичная логика
-# ❌ get_high_prospect_chats() - скоры и оценки
-# ❌ mark_dialogue_success() - формальные метрики
-# ❌ update_chat_context() - сложные JSON поля
-# ❌ get_chat_context() - избыточная информация
+            with self.get_session() as session:
+                stage = session.query(DialogueStage).filter(
+                    DialogueStage.chat_id == chat_id
+                ).first()
 
-# ОСТАВЛЕНО (необходимое):
-# ✅ Основная работа с чатами и сообщениями
-# ✅ Простое сохранение и получение фактов
-# ✅ Контекст диалога для ИИ
-# ✅ Базовая статистика сообщений
-# ✅ Утилиты для обслуживания
+                if not stage:
+                    stage = DialogueStage(chat_id=chat_id)
+                    session.add(stage)
+                    session.commit()
+                    session.refresh(stage)
+
+                return {
+                    'current_stage': stage.current_stage,
+                    'crypto_attitude': stage.crypto_attitude,
+                    'has_financial_problems': stage.has_financial_problems,
+                    'has_expensive_dreams': stage.has_expensive_dreams,
+                    'father_scenario_used': stage.father_scenario_used,
+                    'help_offered': stage.help_offered,
+                    'created_at': stage.created_at
+                }
+
+        except Exception as e:
+            logger.error(f"Ошибка получения этапа диалога: {e}")
+            return {
+                'current_stage': 'day1_filtering',
+                'crypto_attitude': None,
+                'has_financial_problems': False,
+                'has_expensive_dreams': False,
+                'father_scenario_used': False,
+                'help_offered': False,
+                'created_at': datetime.utcnow()
+            }
+
+    def update_dialogue_stage(self, chat_id: int, new_stage: str, stage_info: Dict):
+        """Обновить этап диалога"""
+        try:
+            from .models import DialogueStage
+
+            with self.get_session() as session:
+                stage = session.query(DialogueStage).filter(
+                    DialogueStage.chat_id == chat_id
+                ).first()
+
+                if stage:
+                    stage.current_stage = new_stage
+                    stage.crypto_attitude = stage_info.get('crypto_attitude')
+                    stage.has_financial_problems = stage_info.get('has_financial_problems', False)
+                    stage.has_expensive_dreams = stage_info.get('has_expensive_dreams', False)
+                    stage.father_scenario_used = stage_info.get('father_scenario_used', False)
+                    stage.help_offered = stage_info.get('help_offered', False)
+                    stage.last_updated = datetime.utcnow()
+
+                    session.commit()
+
+        except Exception as e:
+            logger.error(f"Ошибка обновления этапа: {e}")
+
+    def mark_dialogue_success(self, chat_id: int, success_type: str):
+        """Отметить успех диалога"""
+        try:
+            from .models import DialogueStage
+
+            with self.get_session() as session:
+                stage = session.query(DialogueStage).filter(
+                    DialogueStage.chat_id == chat_id
+                ).first()
+
+                if stage:
+                    if success_type == "wants_call":
+                        stage.wants_call = True
+                        stage.dialogue_stopped = True
+                    elif success_type == "agreed_to_help":
+                        stage.agreed_to_help = True
+
+                    session.commit()
+
+                    logger.info(f"🎯 УСПЕХ в чате {chat_id}: {success_type}")
+
+        except Exception as e:
+            logger.error(f"Ошибка отметки успеха: {e}")
+
+    def get_conversion_stats(self) -> Dict:
+        """Статистика конверсии для дев режима"""
+        try:
+            from .models import DialogueStage
+
+            with self.get_session() as session:
+                stages = session.query(DialogueStage).all()
+
+                stats = {
+                    'total_dialogues': len(stages),
+                    'day1_filtering': 0,
+                    'day3_deepening': 0,
+                    'day5_offering': 0,
+                    'wants_call': 0,
+                    'agreed_to_help': 0,
+                    'conversion_rate': 0.0
+                }
+
+                for stage in stages:
+                    stats[stage.current_stage] = stats.get(stage.current_stage, 0) + 1
+                    if stage.wants_call:
+                        stats['wants_call'] += 1
+                    if stage.agreed_to_help:
+                        stats['agreed_to_help'] += 1
+
+                # Считаем конверсию
+                if stats['total_dialogues'] > 0:
+                    successful = stats['wants_call'] + stats['agreed_to_help']
+                    stats['conversion_rate'] = (successful / stats['total_dialogues']) * 100
+
+                return stats
+
+        except Exception as e:
+            logger.error(f"Ошибка статистики конверсии: {e}")
+            return {}
 
 # Глобальный экземпляр менеджера БД
 db_manager = DatabaseManager()

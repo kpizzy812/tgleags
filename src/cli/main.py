@@ -265,6 +265,7 @@ def queue():
 cli.add_command(chat_commands.send)
 cli.add_command(chat_commands.dialogs)
 cli.add_command(chat_commands.messages)
+cli.add_command(stats_commands.dev)
 
 # Добавляем команды статистики
 cli.add_command(stats_commands.stats)

@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     monitor_interval: int = Field(default=10, description="Message monitoring interval in seconds")
     max_concurrent_chats: int = Field(default=10, description="Maximum concurrent chats")
 
+    # DEV MODE для быстрого тестирования
+    dev_mode: bool = Field(default=False, description="Development mode for fast testing")
+
     # Response settings
     min_response_delay: int = Field(default=5, description="Minimum response delay in seconds")
     max_response_delay: int = Field(default=60, description="Maximum response delay in seconds")

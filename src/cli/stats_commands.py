@@ -272,6 +272,48 @@ class StatsCommands:
         except Exception as e:
             click.echo(f"❌ Ошибка анализа возможностей: {e}")
 
+    @staticmethod
+    @click.command()
+    def dev():
+        """⚡ Дев режим - быстрая статистика конверсии"""
+        try:
+            conversion_stats = db_manager.get_conversion_stats()
+
+            if not conversion_stats:
+                click.echo("📭 Нет данных о диалогах")
+                return
+
+            click.echo(f"\n⚡ ДЕВ РЕЖИМ - Статистика конверсии:")
+            click.echo("=" * 60)
+
+            total = conversion_stats['total_dialogues']
+            click.echo(f"📊 Всего диалогов: {total}")
+
+            if total > 0:
+                click.echo(f"\n📈 Воронка конверсии:")
+                click.echo(
+                    f"   🔍 Фильтрация:  {conversion_stats.get('day1_filtering', 0)} ({conversion_stats.get('day1_filtering', 0) / total * 100:.1f}%)")
+                click.echo(
+                    f"   💕 Углубление:   {conversion_stats.get('day3_deepening', 0)} ({conversion_stats.get('day3_deepening', 0) / total * 100:.1f}%)")
+                click.echo(
+                    f"   💼 Предложение:  {conversion_stats.get('day5_offering', 0)} ({conversion_stats.get('day5_offering', 0) / total * 100:.1f}%)")
+
+                click.echo(f"\n🎯 РЕЗУЛЬТАТЫ:")
+                wants_call = conversion_stats.get('wants_call', 0)
+                agreed = conversion_stats.get('agreed_to_help', 0)
+                click.echo(f"   📞 Хотят созвониться: {wants_call}")
+                click.echo(f"   ✅ Согласны помочь:   {agreed}")
+
+                click.echo(f"\n💯 КОНВЕРСИЯ: {conversion_stats.get('conversion_rate', 0):.1f}%")
+
+                if conversion_stats.get('conversion_rate', 0) > 0:
+                    click.echo("🎉 Есть успешные конверсии!")
+                else:
+                    click.echo("❌ Пока нет успешных конверсий")
+                    click.echo("💡 Продолжайте тестировать диалоги")
+
+        except Exception as e:
+            click.echo(f"❌ Ошибка дев статистики: {e}")
 
 # Создаем экземпляр для экспорта команд
 stats_commands = StatsCommands()

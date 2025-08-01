@@ -129,7 +129,7 @@ class MessageMonitor:
             logger.error(f"Ошибка проверки сообщений: {e}")
 
     async def _process_chat_simple(self, chat):
-        """Простая обработка чата"""
+        """Простая обработка чата с защитой от дублей"""
         try:
             chat_id = chat.id
             last_processed_id = self.last_processed_message_ids.get(chat_id, 0)
@@ -138,11 +138,59 @@ class MessageMonitor:
             message_batch = db_manager.get_unprocessed_user_messages(
                 chat_id=chat_id,
                 last_processed_id=last_processed_id,
-                time_window_seconds=60  # Увеличиваем окно для естественности
+                time_window_seconds=60
             )
 
             if not message_batch.messages:
                 return
+
+            # ПРОВЕРЯЕМ НЕТ ЛИ УЖЕ ОТВЕТА В ОЧЕРЕДИ
+            pending_response = None
+            for i, response in enumerate(self.response_queue):
+                if response['chat_id'] == chat_id:
+                    pending_response = response
+                    pending_index = i
+                    break
+
+            if pending_response:
+                # ЕСЛИ ЕСТЬ НОВЫЕ СООБЩЕНИЯ - ОБНОВЛЯЕМ ОТВЕТ
+                logger.info(f"📝 Обновляем ответ для чата {chat_id} с учетом новых сообщений")
+
+                # Удаляем старый ответ из очереди
+                self.response_queue.pop(pending_index)
+
+                # Генерируем новый ответ с учетом ВСЕХ сообщений
+                response_text = await self.response_generator.generate_response_for_batch(
+                    chat_id, message_batch
+                )
+
+                if response_text:
+                    # Рассчитываем новую задержку (меньше, так как уже ждали)
+                    delay = self._calculate_natural_delay(message_batch, chat_id) // 2  # Вдвое меньше
+                    send_time = datetime.utcnow() + timedelta(seconds=delay)
+
+                    # Добавляем обновленный ответ
+                    self.response_queue.append({
+                        'chat_id': chat_id,
+                        'telegram_user_id': chat.telegram_user_id,
+                        'message_text': response_text,
+                        'send_time': send_time,
+                        'message_batch': message_batch
+                    })
+
+                    logger.info(f"🔄 Ответ обновлен для чата {chat_id}, новая задержка: {delay}с")
+
+                # Обновляем ID последнего обработанного
+                self.last_processed_message_ids[chat_id] = message_batch.messages[-1].id
+                return
+
+            # ПРОВЕРЯЕМ НЕ ОТВЕЧАЛИ ЛИ МЫ НЕДАВНО
+            recent_messages = db_manager.get_chat_messages(chat_id, limit=5)
+            if recent_messages and recent_messages[-1].is_from_ai:
+                time_since_our_response = (datetime.utcnow() - recent_messages[-1].created_at).total_seconds()
+                if time_since_our_response < 300:  # 5 минут
+                    logger.debug(f"Недавно отвечали в чат {chat_id}, ждем")
+                    return
 
             logger.info(f"📬 Новые сообщения в чате {chat_id}: {len(message_batch.messages)}")
 
@@ -150,7 +198,7 @@ class MessageMonitor:
             if not self.response_generator.should_respond(chat_id, message_batch):
                 return
 
-            # Генерируем ответ
+            # Остальная логика без изменений...
             response_text = await self.response_generator.generate_response_for_batch(
                 chat_id, message_batch
             )
@@ -223,8 +271,16 @@ class MessageMonitor:
         return max(5, min(final_delay, 180))  # От 5 секунд до 3 минут
 
     async def _send_ready_responses(self):
-        """Отправка готовых ответов"""
+        """Отправка готовых ответов с отладкой"""
         current_time = datetime.utcnow()
+
+        if self.response_queue:
+            logger.debug(
+                f"🕐 Проверяем очередь ({len(self.response_queue)} ответов). Текущее время: {current_time.strftime('%H:%M:%S')}")
+            for i, response in enumerate(self.response_queue):
+                time_diff = (response['send_time'] - current_time).total_seconds()
+                logger.debug(
+                    f"   {i + 1}. Чат {response['chat_id']}: {'готов' if time_diff <= 0 else f'через {time_diff:.0f}с'}")
 
         ready_responses = []
         remaining_responses = []
@@ -239,6 +295,7 @@ class MessageMonitor:
 
         # Отправляем готовые
         for response in ready_responses:
+            logger.info(f"📤 Отправляем готовый ответ в чат {response['chat_id']}")
             await self._send_response_naturally(response)
 
     async def _send_response_naturally(self, response: Dict):

@@ -81,14 +81,38 @@ class PersonFact(Base):
     source_message = relationship("Message")
 
 
-# УДАЛЕНО (переусложнение):
-# ❌ ChatContext - сложные JSON поля, избыточная информация
-# ❌ DialogueAnalytics - роботизированные метрики и скоры
+class DialogueStage(Base):
+    """Отслеживание этапов диалога по стратегии"""
+    __tablename__ = "dialogue_stages"
 
-# ОСТАВЛЕНО (необходимое):
-# ✅ Chat - базовая информация о диалоге
-# ✅ Message - история сообщений
-# ✅ PersonFact - простые факты для естественного общения
+    id = Column(Integer, primary_key=True, index=True)
+    chat_id = Column(Integer, ForeignKey("chats.id"), nullable=False)
+
+    # Текущий этап
+    current_stage = Column(String(50),
+                           default="day1_filtering")  # day1_filtering, day3_deepening, day5_offering, completed, failed
+
+    # Прогресс
+    crypto_attitude = Column(String(20), nullable=True)  # positive, negative, neutral
+    has_financial_problems = Column(Boolean, default=False)
+    has_expensive_dreams = Column(Boolean, default=False)
+    father_scenario_used = Column(Boolean, default=False)
+    father_scenario_date = Column(DateTime, nullable=True)
+    help_offered = Column(Boolean, default=False)
+    help_offer_date = Column(DateTime, nullable=True)
+
+    # Результат
+    agreed_to_help = Column(Boolean, default=False)
+    wants_call = Column(Boolean, default=False)  # Стоп-сигнал
+    dialogue_stopped = Column(Boolean, default=False)
+    failure_reason = Column(String(200), nullable=True)
+
+    # Метаданные
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_updated = Column(DateTime, default=datetime.utcnow)
+
+    # Связи
+    chat = relationship("Chat")
 
 """
 Типы фактов в PersonFact:
