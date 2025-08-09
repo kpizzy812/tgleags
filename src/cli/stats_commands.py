@@ -292,6 +292,102 @@ class StatsCommands:
 
     @staticmethod
     @click.command()
+    def transferred():
+        """🎯 Показать диалоги переданные человеку"""
+        try:
+            from ..database.models import DialogueStage
+            
+            with db_manager.get_session() as session:
+                # Получаем все переданные диалоги
+                transferred_stages = session.query(DialogueStage).filter(
+                    DialogueStage.dialogue_stopped == True
+                ).all()
+                
+                if not transferred_stages:
+                    click.echo("📭 Нет переданных человеку диалогов")
+                    return
+                
+                click.echo(f"\n🎯 Диалоги переданные человеку ({len(transferred_stages)}):")
+                click.echo("=" * 60)
+                
+                # Группируем по причинам
+                wants_call = []
+                agreed_to_help = []
+                other_reasons = []
+                
+                for stage in transferred_stages:
+                    chat = db_manager.get_chat_by_id(stage.chat_id)
+                    if not chat:
+                        continue
+                        
+                    stage_data = (stage, chat)
+                    
+                    if stage.wants_call:
+                        wants_call.append(stage_data)
+                    elif stage.agreed_to_help:
+                        agreed_to_help.append(stage_data)
+                    else:
+                        other_reasons.append(stage_data)
+                
+                # Показываем по категориям
+                if wants_call:
+                    click.echo(f"\n📞 ХОТЯТ СОЗВОНИТЬСЯ ({len(wants_call)}):")
+                    for stage, chat in wants_call:
+                        name = chat.first_name or "Без имени"
+                        username = f"@{chat.username}" if chat.username else ""
+                        
+                        # Получаем статистику диалога
+                        stats = db_manager.get_message_statistics(chat.id)
+                        msg_count = stats['total_messages']
+                        
+                        # Получаем факты
+                        facts = db_manager.get_person_facts(chat.id)
+                        work_facts = [f for f in facts if f.fact_type == "job"]
+                        money_facts = [f for f in facts if f.fact_type == "financial_complaint"]
+                        
+                        click.echo(f"\n   👤 {name} {username}")
+                        click.echo(f"      Telegram ID: {chat.telegram_user_id}")
+                        click.echo(f"      Сообщений в диалоге: {msg_count}")
+                        click.echo(f"      Передан: {stage.last_updated.strftime('%d.%m.%Y %H:%M')}")
+                        
+                        if work_facts:
+                            click.echo(f"      💼 Работа: {work_facts[0].fact_value}")
+                        if money_facts:
+                            click.echo(f"      💰 Жалобы: {', '.join([f.fact_value for f in money_facts[:2]])}")
+                
+                if agreed_to_help:
+                    click.echo(f"\n✅ СОГЛАСИЛИСЬ ПОМОЧЬ ({len(agreed_to_help)}):")
+                    for stage, chat in agreed_to_help:
+                        name = chat.first_name or "Без имени"
+                        username = f"@{chat.username}" if chat.username else ""
+                        
+                        click.echo(f"\n   👤 {name} {username}")
+                        click.echo(f"      Telegram ID: {chat.telegram_user_id}")
+                        click.echo(f"      Передан: {stage.last_updated.strftime('%d.%m.%Y %H:%M')}")
+                
+                if other_reasons:
+                    click.echo(f"\n📝 ДРУГИЕ ПРИЧИНЫ ({len(other_reasons)}):")
+                    for stage, chat in other_reasons:
+                        name = chat.first_name or "Без имени"
+                        reason = stage.failure_reason or "не указана"
+                        
+                        click.echo(f"   👤 {name}: {reason}")
+                
+                # Итоговая статистика
+                click.echo(f"\n📊 Итого:")
+                click.echo(f"   🎯 Всего передано: {len(transferred_stages)}")
+                click.echo(f"   📞 Хотят звонить: {len(wants_call)}")
+                click.echo(f"   ✅ Согласны помочь: {len(agreed_to_help)}")
+                
+                if len(transferred_stages) > 0:
+                    success_rate = ((len(wants_call) + len(agreed_to_help)) / len(transferred_stages)) * 100
+                    click.echo(f"   💯 Успешность: {success_rate:.1f}%")
+        
+        except Exception as e:
+            click.echo(f"❌ Ошибка получения переданных диалогов: {e}")
+
+    @staticmethod
+    @click.command()
     def dev():
         """⚡ Дев режим - быстрая статистика конверсии"""
         try:
