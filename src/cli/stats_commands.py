@@ -26,6 +26,24 @@ class StatsCommands:
             click.echo("=" * 50)
             click.echo(f"   Всего активных диалогов: {len(active_chats)}")
 
+            # ❗ НОВОЕ: Статистика передач человеку
+            try:
+                from ..database.models import DialogueStage
+                with db_manager.get_session() as session:
+                    stopped_chats = session.query(DialogueStage).filter(
+                        DialogueStage.dialogue_stopped == True
+                    ).count()
+                    
+                    wants_call = session.query(DialogueStage).filter(
+                        DialogueStage.wants_call == True
+                    ).count()
+                    
+                    click.echo(f"   🎯 Передано человеку: {stopped_chats}")
+                    click.echo(f"   📞 Хотят звонить: {wants_call}")
+                    
+            except Exception as e:
+                logger.debug(f"Ошибка получения статистики передач: {e}")
+
             # Подсчитываем общие метрики
             total_messages = 0
             total_ai_messages = 0

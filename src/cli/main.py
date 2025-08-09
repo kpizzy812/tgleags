@@ -271,6 +271,7 @@ cli.add_command(stats_commands.dev)
 cli.add_command(stats_commands.stats)
 cli.add_command(stats_commands.facts)
 cli.add_command(stats_commands.opportunities)
+cli.add_command(stats_commands.transferred)
 
 
 if __name__ == "__main__":

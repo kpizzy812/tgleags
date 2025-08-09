@@ -1,5 +1,5 @@
 """
-Упрощенная конфигурация приложения
+Обновленные настройки с полным TEST_MODE для быстрого тестирования
 """
 import os
 from typing import Optional, Dict
@@ -41,18 +41,94 @@ class Settings(BaseSettings):
     monitor_interval: int = Field(default=10, description="Message monitoring interval in seconds")
     max_concurrent_chats: int = Field(default=10, description="Maximum concurrent chats")
 
-    # DEV MODE для быстрого тестирования
+    # ❗ НОВОЕ: Режимы тестирования
     dev_mode: bool = Field(default=False, description="Development mode for fast testing")
+    test_mode: bool = Field(default=False, description="Ultra-fast testing mode (minutes instead of days)")
 
     # Response settings
     min_response_delay: int = Field(default=5, description="Minimum response delay in seconds")
     max_response_delay: int = Field(default=60, description="Maximum response delay in seconds")
     typing_duration: int = Field(default=3, description="Typing indicator duration in seconds")
 
+    # ❗ НОВОЕ: Уведомления оператору
+    operator_telegram_id: Optional[int] = Field(default=None, description="Telegram ID оператора для уведомлений")
+    
+    # ❗ НОВОЕ: Настройки сайта знакомств
+    dating_site_name: str = Field(default="Кавёр", description="Название сайта знакомств")
+
+    # ❗ НОВОЕ: Настройки для тестирования
+    test_morning_hour_start: int = Field(default=7, description="Час начала утренних приветствий в тесте")
+    test_morning_hour_end: int = Field(default=9, description="Час окончания утренних приветствий в тесте") 
+    test_evening_hour_start: int = Field(default=22, description="Час начала вечерних приветствий в тесте")
+    test_evening_hour_end: int = Field(default=23, description="Час окончания вечерних приветствий в тесте")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+
+    def get_time_multiplier(self) -> float:
+        """Получить множитель времени для тестирования"""
+        if self.test_mode:
+            return 3600.0  # 1 час = 1 секунда (ускорение в 3600 раз!)
+        elif self.dev_mode:
+            return 60.0    # 1 час = 1 минута (ускорение в 60 раз)
+        else:
+            return 1.0     # Реальное время
+
+    def get_stage_message_thresholds(self) -> Dict[str, int]:
+        """Получить пороги сообщений для переходов этапов"""
+        if self.test_mode:
+            return {
+                "day1_filtering": 2,    # 2 сообщения
+                "day3_deepening": 5,    # 5 сообщений  
+                "day5_offering": 8,     # 8 сообщений
+                "father_scenario": 6    # 6 сообщений для отца
+            }
+        elif self.dev_mode:
+            return {
+                "day1_filtering": 3,    # 3 сообщения
+                "day3_deepening": 8,    # 8 сообщений
+                "day5_offering": 15,    # 15 сообщений
+                "father_scenario": 10   # 10 сообщений для отца
+            }
+        else:
+            return {
+                "day1_filtering": 50,   # ~1 день реального общения
+                "day3_deepening": 150,  # ~3 дня реального общения
+                "day5_offering": 300,   # ~5 дней реального общения  
+                "father_scenario": 200  # 200 сообщений для отца
+            }
+
+    def get_time_delays(self) -> Dict[str, int]:
+        """Получить временные задержки в секундах"""
+        multiplier = self.get_time_multiplier()
+        
+        return {
+            "are_you_busy_delay": int(3600 / multiplier),     # 1 час → 1 сек в test_mode
+            "father_disappear_min": int(36000 / multiplier),  # 10 часов → 10 сек в test_mode  
+            "father_disappear_max": int(54000 / multiplier),  # 15 часов → 15 сек в test_mode
+            "initiative_min_delay": int(1800 / multiplier),   # 30 минут → 0.5 сек в test_mode
+            "initiative_max_delay": int(10800 / multiplier)   # 3 часа → 3 сек в test_mode
+        }
+
+    def is_test_morning_time(self, current_hour: int) -> bool:
+        """Проверить время утренних приветствий (с учетом тест режима)"""
+        if self.test_mode:
+            # В тест режиме утро каждые 10 минут 
+            current_minute = current_hour * 60  # Условное время
+            return (current_minute % 600) < 120  # 2 минуты "утра" каждые 10 минут
+        else:
+            return self.test_morning_hour_start <= current_hour <= self.test_morning_hour_end
+
+    def is_test_evening_time(self, current_hour: int) -> bool:
+        """Проверить время вечерних приветствий (с учетом тест режима)"""  
+        if self.test_mode:
+            # В тест режиме вечер каждые 10 минут
+            current_minute = current_hour * 60  # Условное время
+            return 480 <= (current_minute % 600) < 600  # последние 2 минуты каждых 10 минут
+        else:
+            return self.test_evening_hour_start <= current_hour <= self.test_evening_hour_end
 
 
 class CharacterSettings(BaseSettings):
