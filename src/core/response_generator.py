@@ -184,7 +184,7 @@ class ResponseGenerator:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    temperature=0.6,
+                    temperature=0.4,
                     max_tokens=150,
                     timeout=60
                 )
@@ -201,7 +201,10 @@ class ResponseGenerator:
 
     def _get_day1_prompt(self, stage_info: Dict) -> str:
         """Промпт для Дня 1-2: Знакомство и фильтрация"""
+        current_time_context = self._get_current_moscow_time_context()
         return f"""Ты Стас, 27 лет, трейдер криптовалют. День 1-2 знакомства с девушкой.
+        
+    ТЕКУЩЕЕ ВРЕМЯ: {current_time_context}
 
     ЗАДАЧИ ЭТАПА:
     🔹 Узнать её работу и доходы
@@ -231,6 +234,7 @@ class ResponseGenerator:
 
     def _get_day3_prompt(self, stage_info: Dict, message_count: int) -> str:
         """Промпт для Дня 3-4: Углубление и сценарий с отцом"""
+        current_time_context = self._get_current_moscow_time_context()
 
         father_scenario = ""
         required_messages = 20 if settings.dev_mode else 200
@@ -244,7 +248,7 @@ class ResponseGenerator:
     НЕ проси денег! Только моральную поддержку."""
 
         return f"""Ты Стас, 27 лет. День 3-4 общения - углубление отношений.
-
+    ТЕКУЩЕЕ ВРЕМЯ: {current_time_context}
     {"ТВОЯ СИТУАЦИЯ:" if stage_info.get('has_financial_problems') else ""}
     {f"- Знаешь что у неё проблемы с деньгами/работой" if stage_info.get('has_financial_problems') else ""}
     {f"- Знаешь что у неё дорогие мечты" if stage_info.get('has_expensive_dreams') else ""}
@@ -301,7 +305,11 @@ class ResponseGenerator:
     💡 МЯГКОЕ ПРЕДЛОЖЕНИЕ:
     "Слушай, ты так много всего успеваешь, удивляюсь. Кстати, есть одна идея по подработке, может тебе было бы интересно?" """
 
+        current_time_context = self._get_current_moscow_time_context()
+
         return f"""Ты Стас. День 5-7 - ПРЕДЛОЖЕНИЕ РАБОТЫ.
+
+        ТЕКУЩЕЕ ВРЕМЯ: {current_time_context}
 
     ТЕКУЩАЯ СИТУАЦИЯ:
     {f"- У неё проблемы с финансами: ДА" if stage_info.get('has_financial_problems') else ""}
@@ -600,3 +608,20 @@ class ResponseGenerator:
 
         # Минимальная пауза 5 секунд
         return time_since >= 5
+
+    def _get_current_moscow_time_context(self) -> str:
+        """Получить текущее московское время для ИИ"""
+        utc_now = datetime.utcnow()
+        moscow_now = utc_now + timedelta(hours=3)
+
+        weekdays_ru = {
+            'Monday': 'понедельник', 'Tuesday': 'вторник', 'Wednesday': 'среда',
+            'Thursday': 'четверг', 'Friday': 'пятница', 'Saturday': 'суббота', 'Sunday': 'воскресенье'
+        }
+
+        weekday_en = moscow_now.strftime("%A")
+        weekday_ru = weekdays_ru.get(weekday_en, weekday_en)
+        date_str = moscow_now.strftime("%d.%m.%Y")
+        time_str = moscow_now.strftime("%H:%M")
+
+        return f"Сейчас {weekday_ru}, {date_str}, время {time_str} (Москва)"
